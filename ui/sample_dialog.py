@@ -1,10 +1,13 @@
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                              QDateEdit, QTextEdit, QDialogButtonBox, QMessageBox)
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, Qt, QRegularExpression
+from PyQt6.QtGui import QRegularExpressionValidator
 from datetime import date
 from models import Sample
 from validators import validate_sample, ValidationError
 from database import get_session
+
+_CHINESE_REGEX = QRegularExpression(r'^[\u4e00-\u9fff\u3400-\u4dbfa-zA-Z\u00C0-\u024F\-/·]*$')
 
 
 class SampleDialog(QDialog):
@@ -26,10 +29,12 @@ class SampleDialog(QDialog):
 
         self.original_type_edit = QLineEdit()
         self.original_type_edit.setPlaceholderText('请输入原衣类型')
+        self.original_type_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('原衣类型:', self.original_type_edit)
 
         self.transformation_direction_edit = QLineEdit()
         self.transformation_direction_edit.setPlaceholderText('请输入改造方向')
+        self.transformation_direction_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('改造方向:', self.transformation_direction_edit)
 
         self.sample_date_edit = QDateEdit()
@@ -39,6 +44,7 @@ class SampleDialog(QDialog):
 
         self.person_in_charge_edit = QLineEdit()
         self.person_in_charge_edit.setPlaceholderText('请输入负责人')
+        self.person_in_charge_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('负责人:', self.person_in_charge_edit)
 
         self.status_combo = QComboBox()

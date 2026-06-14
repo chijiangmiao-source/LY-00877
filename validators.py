@@ -1,4 +1,5 @@
 from datetime import date
+import re
 from sqlalchemy.orm import Session
 from models import Sample, Adjustment
 
@@ -7,15 +8,27 @@ class ValidationError(Exception):
     pass
 
 
+_CHINESE_PATTERN = re.compile(r'^[\u4e00-\u9fff\u3400-\u4dbfa-zA-Z\u00C0-\u024F\-/·]+$')
+
+
+def validate_chinese_field(value: str, field_name: str) -> None:
+    if not value or not value.strip():
+        raise ValidationError(f'{field_name}不能为空')
+    cleaned = value.strip()
+    if not _CHINESE_PATTERN.match(cleaned):
+        raise ValidationError(f'{field_name}只能包含中文、英文字母，不能输入数字、空格或特殊符号')
+
+
 def validate_sample(db: Session, sample: Sample, exclude_id: int = None) -> None:
     if not sample.sample_no or not sample.sample_no.strip():
         raise ValidationError('试样编号不能为空')
 
-    if not sample.original_type or not sample.original_type.strip():
-        raise ValidationError('原衣类型不能为空')
+    validate_chinese_field(sample.original_type, '原衣类型')
+    validate_chinese_field(sample.transformation_direction, '改造方向')
 
-    if not sample.transformation_direction or not sample.transformation_direction.strip():
-        raise ValidationError('改造方向不能为空')
+    if sample.person_in_charge and sample.person_in_charge.strip():
+        if not _CHINESE_PATTERN.match(sample.person_in_charge.strip()):
+            raise ValidationError('负责人只能包含中文、英文字母，不能输入数字、空格或特殊符号')
 
     if not sample.sample_date:
         raise ValidationError('打样日期不能为空')

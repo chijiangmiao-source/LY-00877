@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QPushButton, QComboBox, QWidget)
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineSettings
 import pandas as pd
 from pyecharts.charts import Pie, Bar, Line
 from pyecharts import options as opts
@@ -16,8 +17,18 @@ class StatsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('统计图表')
         self.resize(900, 650)
+        self._temp_files = []
         self._init_ui()
         self._load_stats()
+
+    def _create_web_view(self):
+        view = QWebEngineView()
+        settings = view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
+        return view
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -48,7 +59,7 @@ class StatsDialog(QDialog):
     def _create_status_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.status_view = QWebEngineView()
+        self.status_view = self._create_web_view()
         layout.addWidget(self.status_view)
         widget.setLayout(layout)
         return widget
@@ -56,7 +67,7 @@ class StatsDialog(QDialog):
     def _create_failure_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.failure_view = QWebEngineView()
+        self.failure_view = self._create_web_view()
         layout.addWidget(self.failure_view)
         widget.setLayout(layout)
         return widget
@@ -64,7 +75,7 @@ class StatsDialog(QDialog):
     def _create_type_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.type_view = QWebEngineView()
+        self.type_view = self._create_web_view()
         layout.addWidget(self.type_view)
         widget.setLayout(layout)
         return widget
@@ -72,7 +83,7 @@ class StatsDialog(QDialog):
     def _create_direction_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.direction_view = QWebEngineView()
+        self.direction_view = self._create_web_view()
         layout.addWidget(self.direction_view)
         widget.setLayout(layout)
         return widget
@@ -80,7 +91,7 @@ class StatsDialog(QDialog):
     def _create_monthly_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.monthly_view = QWebEngineView()
+        self.monthly_view = self._create_web_view()
         layout.addWidget(self.monthly_view)
         widget.setLayout(layout)
         return widget
@@ -123,7 +134,10 @@ class StatsDialog(QDialog):
                 failure_remarks[key] = failure_remarks.get(key, 0) + 1
 
         if not failure_remarks:
-            self.failure_view.setHtml('<html><body><p style="text-align:center; margin-top:100px;">暂无失败记录</p></body></html>')
+            self.failure_view.setHtml(
+                '<html><body style="display:flex;justify-content:center;align-items:center;height:100vh;">'
+                '<p style="font-size:18px;color:#999;">暂无失败记录</p></body></html>'
+            )
             return
 
         bar = (
@@ -191,16 +205,18 @@ class StatsDialog(QDialog):
         self._load_chart(self.monthly_view, line)
 
     def _load_chart(self, web_view, chart):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html')
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8')
         temp_file.close()
         chart.render(temp_file.name)
-        web_view.setUrl(QUrl.fromLocalFile(temp_file.name))
-        self._temp_files = getattr(self, '_temp_files', [])
+
+        with open(temp_file.name, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        web_view.setHtml(html_content, QUrl('https://assets.pyecharts.org/'))
         self._temp_files.append(temp_file.name)
 
     def closeEvent(self, event):
-        temp_files = getattr(self, '_temp_files', [])
-        for f in temp_files:
+        for f in self._temp_files:
             try:
                 os.unlink(f)
             except:

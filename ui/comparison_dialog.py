@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget,
-                             QTableWidget, QTableWidgetItem, QLabel, QSplitter,
-                             QPushButton, QMessageBox, QHeaderView, QWidget)
+                             QListWidgetItem, QTableWidget, QTableWidgetItem,
+                             QLabel, QSplitter, QPushButton, QMessageBox,
+                             QHeaderView, QWidget)
 from PyQt6.QtCore import Qt
 from models import Sample, Adjustment
 from database import get_session
@@ -19,13 +20,15 @@ class ComparisonDialog(QDialog):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        left_widget = QVBoxLayout()
-        left_widget.addWidget(QLabel('选择试样:'))
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+
+        left_layout.addWidget(QLabel('选择试样:'))
 
         self.sample_list = QListWidget()
         self.sample_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.sample_list.itemSelectionChanged.connect(self._on_selection_changed)
-        left_widget.addWidget(self.sample_list)
+        left_layout.addWidget(self.sample_list)
 
         btn_layout = QHBoxLayout()
         self.select_all_btn = QPushButton('全选')
@@ -34,14 +37,9 @@ class ComparisonDialog(QDialog):
         self.clear_btn.clicked.connect(self._clear_selection)
         btn_layout.addWidget(self.select_all_btn)
         btn_layout.addWidget(self.clear_btn)
-        left_widget.addLayout(btn_layout)
+        left_layout.addLayout(btn_layout)
 
-        left_container = QVBoxLayout()
-        left_container.addLayout(left_widget)
-
-        left_widget_qt = QWidget()
-        left_widget_qt.setLayout(left_widget)
-        splitter.addWidget(left_widget_qt)
+        splitter.addWidget(left_container)
 
         self.table = QTableWidget()
         self.table.setColumnCount(0)
@@ -62,21 +60,32 @@ class ComparisonDialog(QDialog):
             samples = db.query(Sample).order_by(Sample.sample_no).all()
             self.sample_list.clear()
             for sample in samples:
-                self.sample_list.addItem(f'{sample.sample_no} - {sample.original_type}')
-                self.sample_list.item(self.sample_list.count() - 1).setData(Qt.ItemDataRole.UserRole, sample.id)
+                item_text = f'{sample.sample_no} - {sample.original_type}'
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, sample.id)
+                self.sample_list.addItem(item)
         finally:
             db.close()
 
     def _select_all(self):
+        self.sample_list.blockSignals(True)
         for i in range(self.sample_list.count()):
             self.sample_list.item(i).setSelected(True)
+        self.sample_list.blockSignals(False)
+        self._on_selection_changed()
 
     def _clear_selection(self):
+        self.sample_list.blockSignals(True)
         self.sample_list.clearSelection()
+        self.sample_list.blockSignals(False)
+        self._on_selection_changed()
 
     def _on_selection_changed(self):
-        selected_items = self.sample_list.selectedItems()
-        selected_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+        selected_ids = []
+        for item in self.sample_list.selectedItems():
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is not None:
+                selected_ids.append(int(data))
         self._load_comparison(selected_ids)
 
     def _load_comparison(self, sample_ids):

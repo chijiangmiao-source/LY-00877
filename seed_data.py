@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from database import init_db, get_session
-from models import Sample, Adjustment
+from models import Sample, Adjustment, Milestone
 
 
 def seed_demo_data():
@@ -20,7 +20,8 @@ def seed_demo_data():
                 'sample_date': date.today() - timedelta(days=30),
                 'person_in_charge': '张师傅',
                 'status': '已完成',
-                'final_result': '采用方案B，背包容量适中，造型时尚'
+                'final_result': '采用方案B，背包容量适中，造型时尚',
+                'expected_completion_date': date.today() - timedelta(days=10),
             },
             {
                 'sample_no': 'JY-2024-002',
@@ -29,7 +30,8 @@ def seed_demo_data():
                 'sample_date': date.today() - timedelta(days=20),
                 'person_in_charge': '李设计师',
                 'status': '版型定稿',
-                'final_result': None
+                'final_result': None,
+                'expected_completion_date': date.today() - timedelta(days=1),
             },
             {
                 'sample_no': 'JY-2024-003',
@@ -38,7 +40,8 @@ def seed_demo_data():
                 'sample_date': date.today() - timedelta(days=10),
                 'person_in_charge': '王师傅',
                 'status': '版型调整中',
-                'final_result': None
+                'final_result': None,
+                'expected_completion_date': date.today() + timedelta(days=2),
             },
             {
                 'sample_no': 'JY-2024-004',
@@ -47,7 +50,8 @@ def seed_demo_data():
                 'sample_date': date.today() - timedelta(days=5),
                 'person_in_charge': '张师傅',
                 'status': '打样中',
-                'final_result': None
+                'final_result': None,
+                'expected_completion_date': date.today() + timedelta(days=10),
             },
             {
                 'sample_no': 'JY-2024-005',
@@ -56,8 +60,19 @@ def seed_demo_data():
                 'sample_date': date.today() - timedelta(days=15),
                 'person_in_charge': '李设计师',
                 'status': '已废弃',
-                'final_result': None
-            }
+                'final_result': None,
+                'expected_completion_date': date.today() - timedelta(days=5),
+            },
+            {
+                'sample_no': 'JY-2024-006',
+                'original_type': '旧牛仔裤',
+                'transformation_direction': '改造成牛仔裙',
+                'sample_date': date.today() - timedelta(days=8),
+                'person_in_charge': '王师傅',
+                'status': '打样中',
+                'final_result': None,
+                'expected_completion_date': date.today() + timedelta(days=1),
+            },
         ]
 
         sample_ids = []
@@ -80,6 +95,7 @@ def seed_demo_data():
                  'remark': '背带承重良好'},
                 {'adjust_date': date.today() - timedelta(days=18), 'adjust_part': '内衬添加',
                  'adjust_method': '添加花布内衬', 'result_evaluation': '失败',
+                 'failure_reason': '布料太厚',
                  'remark': '内衬布料太厚，背包显得臃肿'},
                 {'adjust_date': date.today() - timedelta(days=15), 'adjust_part': '内衬优化',
                  'adjust_method': '改用薄棉布内衬', 'result_evaluation': '成功',
@@ -91,6 +107,7 @@ def seed_demo_data():
                  'remark': '领口弹性好，适合做袋口'},
                 {'adjust_date': date.today() - timedelta(days=15), 'adjust_part': '提手设计',
                  'adjust_method': '使用袖子做提手', 'result_evaluation': '失败',
+                 'failure_reason': '承重力不足',
                  'remark': '袖子布料太薄，承重不足容易断裂'},
                 {'adjust_date': date.today() - timedelta(days=12), 'adjust_part': '提手加固',
                  'adjust_method': '提手处加衬布加固', 'result_evaluation': '成功',
@@ -103,7 +120,22 @@ def seed_demo_data():
                 {'adjust_date': date.today() - timedelta(days=6), 'adjust_part': '衣身收腰',
                  'adjust_method': '两侧收腰2cm', 'result_evaluation': '部分成功',
                  'remark': '收腰效果不错，但版型偏紧'}
-            ])
+            ]),
+            (4, [
+                {'adjust_date': date.today() - timedelta(days=12), 'adjust_part': '领口改造',
+                 'adjust_method': '大翻领设计', 'result_evaluation': '失败',
+                 'failure_reason': '版型不符',
+                 'remark': '翻领太宽，比例不协调'},
+                {'adjust_date': date.today() - timedelta(days=9), 'adjust_part': '腰围调整',
+                 'adjust_method': '收腰3cm', 'result_evaluation': '失败',
+                 'failure_reason': '布料张力问题',
+                 'remark': '收腰后裙摆变形严重'}
+            ]),
+            (5, [
+                {'adjust_date': date.today() - timedelta(days=6), 'adjust_part': '裤腿剪裁',
+                 'adjust_method': '裤腿改造成裙摆', 'result_evaluation': '部分成功',
+                 'remark': '初步成型，还需调整'}
+            ]),
         ]
 
         for sample_idx, adjustments in adjustments_data:
@@ -112,11 +144,80 @@ def seed_demo_data():
                 adj = Adjustment(sample_id=sample_id, **adj_data)
                 db.add(adj)
 
+        milestones_data = [
+            (0, [
+                {'name': '版型设计', 'target_date': date.today() - timedelta(days=28),
+                 'actual_date': date.today() - timedelta(days=27), 'status': '已完成',
+                 'description': '完成初始版型设计', 'sort_order': 1},
+                {'name': '首次打样', 'target_date': date.today() - timedelta(days=22),
+                 'actual_date': date.today() - timedelta(days=21), 'status': '已完成',
+                 'description': '完成首次试样打样', 'sort_order': 2},
+                {'name': '版型调整', 'target_date': date.today() - timedelta(days=15),
+                 'actual_date': date.today() - timedelta(days=14), 'status': '已完成',
+                 'description': '根据测试反馈调整版型', 'sort_order': 3},
+                {'name': '最终定稿', 'target_date': date.today() - timedelta(days=10),
+                 'actual_date': date.today() - timedelta(days=10), 'status': '已完成',
+                 'description': '最终版型确认定稿', 'sort_order': 4},
+            ]),
+            (1, [
+                {'name': '版型设计', 'target_date': date.today() - timedelta(days=18),
+                 'actual_date': date.today() - timedelta(days=17), 'status': '已完成',
+                 'description': '完成初始版型设计', 'sort_order': 1},
+                {'name': '首次打样', 'target_date': date.today() - timedelta(days=12),
+                 'actual_date': date.today() - timedelta(days=11), 'status': '已完成',
+                 'description': '完成首次试样打样', 'sort_order': 2},
+                {'name': '版型定稿', 'target_date': date.today() - timedelta(days=1),
+                 'actual_date': None, 'status': '进行中',
+                 'description': '确认最终版型', 'sort_order': 3},
+            ]),
+            (2, [
+                {'name': '版型设计', 'target_date': date.today() - timedelta(days=9),
+                 'actual_date': date.today() - timedelta(days=8), 'status': '已完成',
+                 'description': '完成马甲版型设计', 'sort_order': 1},
+                {'name': '首次打样', 'target_date': date.today() - timedelta(days=5),
+                 'actual_date': None, 'status': '进行中',
+                 'description': '完成首次试样打样', 'sort_order': 2},
+                {'name': '版型调整', 'target_date': date.today() + timedelta(days=2),
+                 'actual_date': None, 'status': '待开始',
+                 'description': '根据测试反馈调整', 'sort_order': 3},
+            ]),
+            (3, [
+                {'name': '版型设计', 'target_date': date.today() - timedelta(days=3),
+                 'actual_date': date.today() - timedelta(days=2), 'status': '已完成',
+                 'description': '完成抱枕套版型设计', 'sort_order': 1},
+                {'name': '首次打样', 'target_date': date.today() + timedelta(days=3),
+                 'actual_date': None, 'status': '待开始',
+                 'description': '完成首次打样', 'sort_order': 2},
+                {'name': '最终定稿', 'target_date': date.today() + timedelta(days=10),
+                 'actual_date': None, 'status': '待开始',
+                 'description': '最终确认', 'sort_order': 3},
+            ]),
+            (5, [
+                {'name': '版型设计', 'target_date': date.today() - timedelta(days=5),
+                 'actual_date': date.today() - timedelta(days=4), 'status': '已完成',
+                 'description': '完成牛仔裙版型设计', 'sort_order': 1},
+                {'name': '首次打样', 'target_date': date.today() + timedelta(days=1),
+                 'actual_date': None, 'status': '进行中',
+                 'description': '完成首次打样', 'sort_order': 2},
+                {'name': '版型调整', 'target_date': date.today() + timedelta(days=1),
+                 'actual_date': None, 'status': '待开始',
+                 'description': '根据试穿反馈调整', 'sort_order': 3},
+            ]),
+        ]
+
+        for sample_idx, milestones in milestones_data:
+            sample_id = sample_ids[sample_idx]
+            for ms_data in milestones:
+                ms = Milestone(sample_id=sample_id, **ms_data)
+                db.add(ms)
+
         db.commit()
         print('演示数据导入成功！')
         print(f'共导入 {len(samples_data)} 条试样记录')
         total_adjusts = sum(len(adjs) for _, adjs in adjustments_data)
         print(f'共导入 {total_adjusts} 条调整记录')
+        total_milestones = sum(len(ms) for _, ms in milestones_data)
+        print(f'共导入 {total_milestones} 条关键节点')
 
     except Exception as e:
         db.rollback()

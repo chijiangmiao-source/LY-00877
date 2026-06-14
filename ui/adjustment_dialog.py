@@ -39,8 +39,13 @@ class AdjustmentDialog(QDialog):
         self.result_evaluation_combo.currentTextChanged.connect(self._on_evaluation_changed)
         layout.addRow('结果评价:', self.result_evaluation_combo)
 
+        self.failure_reason_edit = QLineEdit()
+        self.failure_reason_edit.setPlaceholderText('请选择或输入失败原因')
+        self.failure_reason_edit.setEnabled(False)
+        layout.addRow('失败原因:', self.failure_reason_edit)
+
         self.remark_edit = QTextEdit()
-        self.remark_edit.setPlaceholderText('失败时必填，不少于5个字')
+        self.remark_edit.setPlaceholderText('选填')
         self.remark_edit.setMaximumHeight(120)
         layout.addRow('备注:', self.remark_edit)
 
@@ -54,10 +59,13 @@ class AdjustmentDialog(QDialog):
         self.setLayout(layout)
 
     def _on_evaluation_changed(self, evaluation):
-        if evaluation == '失败':
-            self.remark_edit.setPlaceholderText('失败时必填，不少于5个字')
+        is_failure = evaluation == '失败'
+        self.failure_reason_edit.setEnabled(is_failure)
+        if is_failure:
+            self.failure_reason_edit.setPlaceholderText('请输入失败原因')
         else:
-            self.remark_edit.setPlaceholderText('选填')
+            self.failure_reason_edit.setPlaceholderText('')
+        self.remark_edit.setPlaceholderText('选填')
 
     def _load_adjustment(self):
         db = get_session()
@@ -70,6 +78,7 @@ class AdjustmentDialog(QDialog):
                 self.adjust_part_edit.setText(adj.adjust_part)
                 self.adjust_method_edit.setText(adj.adjust_method)
                 self.result_evaluation_combo.setCurrentText(adj.result_evaluation)
+                self.failure_reason_edit.setText(adj.failure_reason or '')
                 self.remark_edit.setPlainText(adj.remark or '')
         finally:
             db.close()
@@ -86,6 +95,10 @@ class AdjustmentDialog(QDialog):
             adj.adjust_part = self.adjust_part_edit.text().strip()
             adj.adjust_method = self.adjust_method_edit.text().strip()
             adj.result_evaluation = self.result_evaluation_combo.currentText()
+            if adj.result_evaluation == '失败':
+                adj.failure_reason = self.failure_reason_edit.text().strip() or None
+            else:
+                adj.failure_reason = None
             adj.remark = self.remark_edit.toPlainText().strip() or None
 
             validate_adjustment(adj)

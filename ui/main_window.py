@@ -1,15 +1,20 @@
 import pandas as pd
+from datetime import date, timedelta
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTableWidget, QTableWidgetItem, QPushButton,
                              QLineEdit, QLabel, QSplitter, QMessageBox,
-                             QFileDialog, QComboBox, QHeaderView, QStatusBar)
+                             QFileDialog, QComboBox, QHeaderView, QStatusBar,
+                             QTabWidget)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QBrush
 from models import Sample, Adjustment
 from database import get_session
 from ui.sample_dialog import SampleDialog
 from ui.adjustment_panel import AdjustmentPanel
+from ui.milestone_panel import MilestonePanel
 from ui.comparison_dialog import ComparisonDialog
 from ui.stats_dialog import StatsDialog
+from ui.review_center_dialog import ReviewCenterDialog
 
 
 class MainWindow(QMainWindow):
@@ -53,6 +58,10 @@ class MainWindow(QMainWindow):
         self.stats_btn.clicked.connect(self._show_stats)
         toolbar_layout.addWidget(self.stats_btn)
 
+        self.review_btn = QPushButton('复盘中心')
+        self.review_btn.clicked.connect(self._show_review_center)
+        toolbar_layout.addWidget(self.review_btn)
+
         self.export_btn = QPushButton('导出Excel')
         self.export_btn.clicked.connect(self._export_excel)
         toolbar_layout.addWidget(self.export_btn)
@@ -80,9 +89,10 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout()
         left_layout.addWidget(QLabel('试样列表'))
         self.sample_table = QTableWidget()
-        self.sample_table.setColumnCount(7)
+        self.sample_table.setColumnCount(9)
         self.sample_table.setHorizontalHeaderLabels([
-            'ID', '试样编号', '原衣类型', '改造方向', '打样日期', '负责人', '试样状态'
+            'ID', '试样编号', '原衣类型', '改造方向', '打样日期', '预计完成日期',
+            '负责人', '试样状态', '提醒状态'
         ])
         self.sample_table.horizontalHeader().setStretchLastSection(True)
         self.sample_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -92,10 +102,14 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.sample_table)
         left_widget.setLayout(left_layout)
 
+        self.right_tab_widget = QTabWidget()
         self.adjustment_panel = AdjustmentPanel()
+        self.milestone_panel = MilestonePanel()
+        self.right_tab_widget.addTab(self.adjustment_panel, '调整记录')
+        self.right_tab_widget.addTab(self.milestone_panel, '关键节点')
 
         splitter.addWidget(left_widget)
-        splitter.addWidget(self.adjustment_panel)
+        splitter.addWidget(self.right_tab_widget)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
 
@@ -110,6 +124,7 @@ class MainWindow(QMainWindow):
 
         search_text = self.search_edit.text().strip().lower()
         status_filter = self.status_filter.currentText()
+        today = date.today()
 
         db = get_session()
         try:
@@ -130,18 +145,53 @@ class MainWindow(QMainWindow):
 
             self.sample_table.setRowCount(len(samples))
             for row, sample in enumerate(samples):
+                reminder_status = self._calc_reminder_status(sample, today)
+
                 self.sample_table.setItem(row, 0, QTableWidgetItem(str(sample.id)))
                 self.sample_table.setItem(row, 1, QTableWidgetItem(sample.sample_no))
                 self.sample_table.setItem(row, 2, QTableWidgetItem(sample.original_type))
                 self.sample_table.setItem(row, 3, QTableWidgetItem(sample.transformation_direction))
                 self.sample_table.setItem(row, 4, QTableWidgetItem(sample.sample_date.strftime('%Y-%m-%d')))
-                self.sample_table.setItem(row, 5, QTableWidgetItem(sample.person_in_charge or ''))
-                self.sample_table.setItem(row, 6, QTableWidgetItem(sample.status))
+                self.sample_table.setItem(row, 5, QTableWidgetItem(
+                    sample.expected_completion_date.strftime('%Y-%m-%d')
+                    if sample.expected_completion_date else ''
+                ))
+                self.sample_table.setItem(row, 6, QTableWidgetItem(sample.person_in_charge or ''))
+                self.sample_table.setItem(row, 7, QTableWidgetItem(sample.status))
+
+                reminder_item = QTableWidgetItem(reminder_status)
+                if reminder_status == '已超期':
+                    reminder_item.setBackground(QBrush(QColor(255, 100, 100)))
+                elif reminder_status == '即将超期':
+                    reminder_item.setBackground(QBrush(QColor(255, 200, 100)))
+                self.sample_table.setItem(row, 8, reminder_item)
+
+                if reminder_status in ('已超期', '即将超期'):
+                    for col in range(self.sample_table.columnCount()):
+                        item = self.sample_table.item(row, col)
+                        if item and col != 8:
+                            if reminder_status == '已超期':
+                                item.setBackground(QBrush(QColor(255, 220, 220)))
+                            else:
+                                item.setBackground(QBrush(QColor(255, 240, 200)))
 
             self.sample_table.resizeColumnsToContents()
             self._update_status_bar()
         finally:
             db.close()
+
+    def _calc_reminder_status(self, sample, today):
+        if sample.status in ('已完成', '已废弃'):
+            return '正常'
+        if not sample.expected_completion_date:
+            return '正常'
+        days_left = (sample.expected_completion_date - today).days
+        if days_left < 0:
+            return '已超期'
+        elif days_left <= 3:
+            return '即将超期'
+        else:
+            return '正常'
 
     def _update_status_bar(self):
         db = get_session()
@@ -149,7 +199,23 @@ class MainWindow(QMainWindow):
             total = db.query(Sample).count()
             completed = db.query(Sample).filter(Sample.status == '已完成').count()
             in_progress = db.query(Sample).filter(Sample.status == '打样中').count()
-            self.statusBar.showMessage(f'共 {total} 条试样 | 进行中: {in_progress} | 已完成: {completed}')
+
+            today = date.today()
+            all_samples = db.query(Sample).all()
+            overdue_count = 0
+            soon_count = 0
+            for s in all_samples:
+                status = self._calc_reminder_status(s, today)
+                if status == '已超期':
+                    overdue_count += 1
+                elif status == '即将超期':
+                    soon_count += 1
+
+            self.statusBar.showMessage(
+                f'共 {total} 条试样 | 进行中: {in_progress} | 已完成: {completed} | '
+                f'<span style="color:red;">已超期: {overdue_count}</span> | '
+                f'<span style="color:orange;">即将超期: {soon_count}</span>'
+            )
         finally:
             db.close()
 
@@ -173,6 +239,7 @@ class MainWindow(QMainWindow):
 
         sample_id = self._get_selected_sample_id()
         self.adjustment_panel.set_sample(sample_id)
+        self.milestone_panel.set_sample(sample_id)
 
     def _add_sample(self):
         dialog = SampleDialog(self)
@@ -221,6 +288,10 @@ class MainWindow(QMainWindow):
 
     def _show_stats(self):
         dialog = StatsDialog(self)
+        dialog.exec()
+
+    def _show_review_center(self):
+        dialog = ReviewCenterDialog(self)
         dialog.exec()
 
     def _export_excel(self):

@@ -47,6 +47,12 @@ class SampleDialog(QDialog):
         self.person_in_charge_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('负责人:', self.person_in_charge_edit)
 
+        self.expected_date_edit = QDateEdit()
+        self.expected_date_edit.setCalendarPopup(True)
+        self.expected_date_edit.setDate(QDate.currentDate().addDays(7))
+        self.expected_date_edit.setSpecialValueText(' ')
+        layout.addRow('预计完成日期:', self.expected_date_edit)
+
         self.status_combo = QComboBox()
         self.status_combo.addItems(['打样中', '版型调整中', '版型定稿', '已完成', '已废弃'])
         self.status_combo.currentTextChanged.connect(self._on_status_changed)
@@ -82,6 +88,12 @@ class SampleDialog(QDialog):
                                                     sample.sample_date.month,
                                                     sample.sample_date.day))
                 self.person_in_charge_edit.setText(sample.person_in_charge or '')
+                if sample.expected_completion_date:
+                    self.expected_date_edit.setDate(QDate(
+                        sample.expected_completion_date.year,
+                        sample.expected_completion_date.month,
+                        sample.expected_completion_date.day
+                    ))
                 self.status_combo.setCurrentText(sample.status)
                 self.final_result_edit.setPlainText(sample.final_result or '')
         finally:
@@ -100,6 +112,8 @@ class SampleDialog(QDialog):
             qdate = self.sample_date_edit.date()
             sample.sample_date = date(qdate.year(), qdate.month(), qdate.day())
             sample.person_in_charge = self.person_in_charge_edit.text().strip() or None
+            exp_qdate = self.expected_date_edit.date()
+            sample.expected_completion_date = date(exp_qdate.year(), exp_qdate.month(), exp_qdate.day())
             sample.status = self.status_combo.currentText()
             sample.final_result = self.final_result_edit.toPlainText().strip() or None
 

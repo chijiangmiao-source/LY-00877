@@ -23,6 +23,7 @@ class Sample(Base):
 
     adjustments = relationship('Adjustment', back_populates='sample', cascade='all, delete-orphan')
     milestones = relationship('Milestone', back_populates='sample', cascade='all, delete-orphan')
+    cost_records = relationship('CostRecord', back_populates='sample', cascade='all, delete-orphan')
 
     def __repr__(self):
         return f'<Sample {self.sample_no}>'
@@ -66,3 +67,43 @@ class Milestone(Base):
 
     def __repr__(self):
         return f'<Milestone {self.name}>'
+
+
+class CostRecord(Base):
+    __tablename__ = 'cost_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sample_id = Column(Integer, ForeignKey('samples.id'), nullable=False)
+    cost_type = Column(String(20), nullable=False, comment='成本类型：旧衣主料/辅料/配件/人工工时')
+    item_name = Column(String(100), nullable=False, comment='项目名称')
+    specification = Column(String(200), comment='规格/说明')
+    quantity = Column(String(50), comment='用量')
+    unit = Column(String(20), comment='单位')
+    unit_price = Column(Integer, default=0, comment='单价（分）')
+    subtotal = Column(Integer, default=0, comment='单项成本（分）')
+    remark = Column(Text, comment='备注')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    sample = relationship('Sample', back_populates='cost_records')
+
+    def __repr__(self):
+        return f'<CostRecord {self.item_name}>'
+
+
+class CostWarning(Base):
+    __tablename__ = 'cost_warnings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sample_id = Column(Integer, ForeignKey('samples.id'), nullable=False)
+    warning_type = Column(String(50), nullable=False, comment='预警类型')
+    warning_message = Column(String(200), nullable=False, comment='预警信息')
+    total_cost = Column(Integer, default=0, comment='本次成本（分）')
+    average_cost = Column(Integer, default=0, comment='同类平均成本（分）')
+    is_handled = Column(Boolean, default=False, comment='是否已处理')
+    created_at = Column(DateTime, default=datetime.now)
+
+    sample = relationship('Sample')
+
+    def __repr__(self):
+        return f'<CostWarning {self.warning_message}>'

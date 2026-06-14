@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from database import init_db, get_session
-from models import Sample, Adjustment, Milestone
+from models import Sample, Adjustment, Milestone, CostRecord, CostWarning
 
 
 def seed_demo_data():
@@ -211,6 +211,126 @@ def seed_demo_data():
                 ms = Milestone(sample_id=sample_id, **ms_data)
                 db.add(ms)
 
+        cost_records_data = [
+            (0, [
+                {'cost_type': '旧衣主料', 'item_name': '旧牛仔裤', 'specification': '尺码32，蓝色',
+                 'quantity': '1', 'unit': '件', 'unit_price': 0, 'subtotal': 0,
+                 'remark': '客户提供旧衣，主料成本为0'},
+                {'cost_type': '辅料', 'item_name': '帆布背带', 'specification': '宽3cm，长120cm',
+                 'quantity': '2', 'unit': '条', 'unit_price': 1500, 'subtotal': 3000,
+                 'remark': '加厚帆布，承重5kg'},
+                {'cost_type': '辅料', 'item_name': '棉布内衬', 'specification': '宽150cm',
+                 'quantity': '0.5', 'unit': '米', 'unit_price': 2000, 'subtotal': 1000,
+                 'remark': '薄棉内衬，印花图案'},
+                {'cost_type': '配件', 'item_name': '拉链', 'specification': '20cm金属拉链',
+                 'quantity': '1', 'unit': '条', 'unit_price': 800, 'subtotal': 800,
+                 'remark': '古铜色金属拉链'},
+                {'cost_type': '配件', 'item_name': '铆钉', 'specification': '8mm金属铆钉',
+                 'quantity': '8', 'unit': '颗', 'unit_price': 50, 'subtotal': 400,
+                 'remark': '加固背带连接处'},
+                {'cost_type': '人工工时', 'item_name': '剪裁工时', 'specification': '裤腿剪裁、袋口剪裁',
+                 'quantity': '1.5', 'unit': '小时', 'unit_price': 5000, 'subtotal': 7500,
+                 'remark': '张师傅操作'},
+                {'cost_type': '人工工时', 'item_name': '缝制工时', 'specification': '内衬缝制、背带安装',
+                 'quantity': '2.5', 'unit': '小时', 'unit_price': 5000, 'subtotal': 12500,
+                 'remark': '张师傅操作'},
+            ]),
+            (1, [
+                {'cost_type': '旧衣主料', 'item_name': '旧T恤', 'specification': 'L码，棉质',
+                 'quantity': '1', 'unit': '件', 'unit_price': 0, 'subtotal': 0,
+                 'remark': '客户提供旧衣'},
+                {'cost_type': '辅料', 'item_name': '衬布', 'specification': '粘合衬',
+                 'quantity': '0.3', 'unit': '米', 'unit_price': 1500, 'subtotal': 450,
+                 'remark': '提手加固用'},
+                {'cost_type': '配件', 'item_name': '按扣', 'specification': '2cm塑料按扣',
+                 'quantity': '2', 'unit': '对', 'unit_price': 200, 'subtotal': 400,
+                 'remark': '袋口闭合用'},
+                {'cost_type': '人工工时', 'item_name': '剪裁工时',
+                 'specification': '领口剪裁、提手剪裁', 'quantity': '0.8', 'unit': '小时',
+                 'unit_price': 4500, 'subtotal': 3600, 'remark': '李设计师操作'},
+                {'cost_type': '人工工时', 'item_name': '缝制工时',
+                 'specification': '袋底缝制、提手缝制', 'quantity': '1.5', 'unit': '小时',
+                 'unit_price': 4500, 'subtotal': 6750, 'remark': '李设计师操作'},
+            ]),
+            (2, [
+                {'cost_type': '旧衣主料', 'item_name': '旧西装', 'specification': 'M码，羊毛混纺',
+                 'quantity': '1', 'unit': '件', 'unit_price': 0, 'subtotal': 0,
+                 'remark': '客户提供旧衣，毛料品质好'},
+                {'cost_type': '辅料', 'item_name': '衬里布', 'specification': '涤纶衬里',
+                 'quantity': '1', 'unit': '米', 'unit_price': 2500, 'subtotal': 2500,
+                 'remark': '爽滑防静电衬里'},
+                {'cost_type': '配件', 'item_name': '马甲纽扣', 'specification': '2cm树脂扣',
+                 'quantity': '5', 'unit': '颗', 'unit_price': 300, 'subtotal': 1500,
+                 'remark': '仿牛角纹理'},
+                {'cost_type': '配件', 'item_name': '垫肩', 'specification': '薄款海绵垫肩',
+                 'quantity': '1', 'unit': '对', 'unit_price': 600, 'subtotal': 600,
+                 'remark': '保持肩部挺括'},
+                {'cost_type': '人工工时', 'item_name': '拆改工时',
+                 'specification': '袖子拆除、衣身拆解', 'quantity': '1', 'unit': '小时',
+                 'unit_price': 5500, 'subtotal': 5500, 'remark': '王师傅操作，手工拆线'},
+                {'cost_type': '人工工时', 'item_name': '剪裁工时',
+                 'specification': '衣身收腰、领口修改', 'quantity': '1.2', 'unit': '小时',
+                 'unit_price': 5500, 'subtotal': 6600, 'remark': '王师傅操作'},
+                {'cost_type': '人工工时', 'item_name': '缝制工时',
+                 'specification': '衬里缝制、扣子安装', 'quantity': '2', 'unit': '小时',
+                 'unit_price': 5500, 'subtotal': 11000, 'remark': '王师傅操作'},
+            ]),
+            (3, [
+                {'cost_type': '旧衣主料', 'item_name': '旧毛衣', 'specification': 'L码，粗毛线',
+                 'quantity': '1', 'unit': '件', 'unit_price': 0, 'subtotal': 0,
+                 'remark': '客户提供旧衣，毛线材质好'},
+                {'cost_type': '辅料', 'item_name': '拉链', 'specification': '40cm尼龙拉链',
+                 'quantity': '1', 'unit': '条', 'unit_price': 500, 'subtotal': 500,
+                 'remark': '抱枕开口用'},
+                {'cost_type': '人工工时', 'item_name': '剪裁工时',
+                 'specification': '毛衣裁剪成型', 'quantity': '0.5', 'unit': '小时',
+                 'unit_price': 5000, 'subtotal': 2500, 'remark': '张师傅操作'},
+                {'cost_type': '人工工时', 'item_name': '缝制工时',
+                 'specification': '三边缝合、拉链安装', 'quantity': '1', 'unit': '小时',
+                 'unit_price': 5000, 'subtotal': 5000, 'remark': '张师傅操作'},
+            ]),
+            (5, [
+                {'cost_type': '旧衣主料', 'item_name': '旧牛仔裤', 'specification': '尺码28，浅蓝色',
+                 'quantity': '1', 'unit': '件', 'unit_price': 0, 'subtotal': 0,
+                 'remark': '客户提供旧衣'},
+                {'cost_type': '辅料', 'item_name': '牛仔布', 'specification': '同色系牛仔布',
+                 'quantity': '0.3', 'unit': '米', 'unit_price': 3000, 'subtotal': 900,
+                 'remark': '拼接裙摆用'},
+                {'cost_type': '配件', 'item_name': '拉链', 'specification': '18cm金属拉链',
+                 'quantity': '1', 'unit': '条', 'unit_price': 600, 'subtotal': 600,
+                 'remark': '侧腰拉链'},
+                {'cost_type': '配件', 'item_name': '裙钩', 'specification': '金属裙钩',
+                 'quantity': '1', 'unit': '套', 'unit_price': 200, 'subtotal': 200,
+                 'remark': '腰部固定'},
+                {'cost_type': '人工工时', 'item_name': '剪裁工时',
+                 'specification': '裤腿剪裁、裙摆剪裁', 'quantity': '1.5', 'unit': '小时',
+                 'unit_price': 5500, 'subtotal': 8250, 'remark': '王师傅操作'},
+                {'cost_type': '人工工时', 'item_name': '缝制工时',
+                 'specification': '裙摆拼接、拉链安装', 'quantity': '2', 'unit': '小时',
+                 'unit_price': 5500, 'subtotal': 11000, 'remark': '王师傅操作，预计还需2小时'},
+            ]),
+        ]
+
+        for sample_idx, cost_records in cost_records_data:
+            sample_id = sample_ids[sample_idx]
+            for cr_data in cost_records:
+                cr = CostRecord(sample_id=sample_id, **cr_data)
+                db.add(cr)
+
+        cost_warnings_data = [
+            (5, {
+                'warning_type': '成本过高预警',
+                'warning_message': '本试样改造成本已超过同类（牛仔裤改牛仔裙）平均成本25%',
+                'total_cost': 20950,
+                'average_cost': 16760,
+            }),
+        ]
+
+        for sample_idx, warning_data in cost_warnings_data:
+            sample_id = sample_ids[sample_idx]
+            cw = CostWarning(sample_id=sample_id, **warning_data)
+            db.add(cw)
+
         db.commit()
         print('演示数据导入成功！')
         print(f'共导入 {len(samples_data)} 条试样记录')
@@ -218,6 +338,9 @@ def seed_demo_data():
         print(f'共导入 {total_adjusts} 条调整记录')
         total_milestones = sum(len(ms) for _, ms in milestones_data)
         print(f'共导入 {total_milestones} 条关键节点')
+        total_cost_records = sum(len(cr) for _, cr in cost_records_data)
+        print(f'共导入 {total_cost_records} 条成本记录')
+        print(f'共导入 {len(cost_warnings_data)} 条成本预警记录')
 
     except Exception as e:
         db.rollback()

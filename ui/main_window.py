@@ -15,6 +15,7 @@ from ui.milestone_panel import MilestonePanel
 from ui.comparison_dialog import ComparisonDialog
 from ui.stats_dialog import StatsDialog
 from ui.review_center_dialog import ReviewCenterDialog
+from ui.cost_center_dialog import CostCenterDialog
 
 
 class MainWindow(QMainWindow):
@@ -61,6 +62,10 @@ class MainWindow(QMainWindow):
         self.review_btn = QPushButton('复盘中心')
         self.review_btn.clicked.connect(self._show_review_center)
         toolbar_layout.addWidget(self.review_btn)
+
+        self.cost_center_btn = QPushButton('成本核算中心')
+        self.cost_center_btn.clicked.connect(self._show_cost_center)
+        toolbar_layout.addWidget(self.cost_center_btn)
 
         self.export_btn = QPushButton('导出Excel')
         self.export_btn.clicked.connect(self._export_excel)
@@ -292,6 +297,10 @@ class MainWindow(QMainWindow):
 
     def _show_review_center(self):
         dialog = ReviewCenterDialog(self)
+        dialog.exec()
+
+    def _show_cost_center(self):
+        dialog = CostCenterDialog(self)
         dialog.exec()
 
     def _export_excel(self):

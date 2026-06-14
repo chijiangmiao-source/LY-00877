@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
-                             QDateEdit, QTextEdit, QDialogButtonBox, QMessageBox)
+                             QDateEdit, QTextEdit, QDialogButtonBox, QMessageBox,
+                             QCheckBox, QHBoxLayout, QWidget)
 from PyQt6.QtCore import QDate, Qt, QRegularExpression
 from PyQt6.QtGui import QRegularExpressionValidator
 from datetime import date
@@ -47,11 +48,21 @@ class SampleDialog(QDialog):
         self.person_in_charge_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('负责人:', self.person_in_charge_edit)
 
+        expected_widget = QWidget()
+        expected_layout = QHBoxLayout()
+        expected_layout.setContentsMargins(0, 0, 0, 0)
+        self.expected_checkbox = QCheckBox('设置预计完成日期')
+        self.expected_checkbox.setChecked(False)
+        self.expected_checkbox.stateChanged.connect(self._on_expected_check_changed)
+        expected_layout.addWidget(self.expected_checkbox)
         self.expected_date_edit = QDateEdit()
         self.expected_date_edit.setCalendarPopup(True)
         self.expected_date_edit.setDate(QDate.currentDate().addDays(7))
-        self.expected_date_edit.setSpecialValueText(' ')
-        layout.addRow('预计完成日期:', self.expected_date_edit)
+        self.expected_date_edit.setEnabled(False)
+        expected_layout.addWidget(self.expected_date_edit)
+        expected_layout.addStretch()
+        expected_widget.setLayout(expected_layout)
+        layout.addRow('预计完成日期:', expected_widget)
 
         self.status_combo = QComboBox()
         self.status_combo.addItems(['打样中', '版型调整中', '版型定稿', '已完成', '已废弃'])
@@ -76,6 +87,9 @@ class SampleDialog(QDialog):
     def _on_status_changed(self, status):
         self.final_result_edit.setEnabled(status == '已完成')
 
+    def _on_expected_check_changed(self, state):
+        self.expected_date_edit.setEnabled(state == Qt.CheckState.Checked.value)
+
     def _load_sample(self):
         db = get_session()
         try:
@@ -89,11 +103,14 @@ class SampleDialog(QDialog):
                                                     sample.sample_date.day))
                 self.person_in_charge_edit.setText(sample.person_in_charge or '')
                 if sample.expected_completion_date:
+                    self.expected_checkbox.setChecked(True)
                     self.expected_date_edit.setDate(QDate(
                         sample.expected_completion_date.year,
                         sample.expected_completion_date.month,
                         sample.expected_completion_date.day
                     ))
+                else:
+                    self.expected_checkbox.setChecked(False)
                 self.status_combo.setCurrentText(sample.status)
                 self.final_result_edit.setPlainText(sample.final_result or '')
         finally:
@@ -112,8 +129,11 @@ class SampleDialog(QDialog):
             qdate = self.sample_date_edit.date()
             sample.sample_date = date(qdate.year(), qdate.month(), qdate.day())
             sample.person_in_charge = self.person_in_charge_edit.text().strip() or None
-            exp_qdate = self.expected_date_edit.date()
-            sample.expected_completion_date = date(exp_qdate.year(), exp_qdate.month(), exp_qdate.day())
+            if self.expected_checkbox.isChecked():
+                exp_qdate = self.expected_date_edit.date()
+                sample.expected_completion_date = date(exp_qdate.year(), exp_qdate.month(), exp_qdate.day())
+            else:
+                sample.expected_completion_date = None
             sample.status = self.status_combo.currentText()
             sample.final_result = self.final_result_edit.toPlainText().strip() or None
 

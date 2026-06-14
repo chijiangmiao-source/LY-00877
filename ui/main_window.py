@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
-from models import Sample, Adjustment
+from models import Sample, Adjustment, Milestone
 from database import get_session
 from ui.sample_dialog import SampleDialog
 from ui.adjustment_panel import AdjustmentPanel
@@ -304,16 +304,21 @@ class MainWindow(QMainWindow):
         db = get_session()
         try:
             samples = db.query(Sample).order_by(Sample.sample_no).all()
+            today = date.today()
 
             sample_data = []
             adjustment_data = []
+            milestone_data = []
 
             for sample in samples:
+                reminder_status = self._calc_reminder_status(sample, today)
                 sample_data.append({
                     '试样编号': sample.sample_no,
                     '原衣类型': sample.original_type,
                     '改造方向': sample.transformation_direction,
                     '打样日期': sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else '',
+                    '预计完成日期': sample.expected_completion_date.strftime('%Y-%m-%d') if sample.expected_completion_date else '',
+                    '提醒状态': reminder_status,
                     '负责人': sample.person_in_charge or '',
                     '试样状态': sample.status,
                     '最终采用结果': sample.final_result or ''
@@ -331,12 +336,29 @@ class MainWindow(QMainWindow):
                         '调整部位': adj.adjust_part,
                         '调整方式': adj.adjust_method,
                         '结果评价': adj.result_evaluation,
+                        '失败原因': adj.failure_reason or '',
                         '备注': adj.remark or ''
+                    })
+
+                milestones = db.query(Milestone).filter(
+                    Milestone.sample_id == sample.id
+                ).order_by(Milestone.sort_order, Milestone.id).all()
+
+                for i, ms in enumerate(milestones, 1):
+                    milestone_data.append({
+                        '试样编号': sample.sample_no,
+                        '节点序号': i,
+                        '节点名称': ms.name,
+                        '目标日期': ms.target_date.strftime('%Y-%m-%d') if ms.target_date else '',
+                        '实际完成日期': ms.actual_date.strftime('%Y-%m-%d') if ms.actual_date else '',
+                        '节点状态': ms.status,
+                        '节点说明': ms.description or ''
                     })
 
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 pd.DataFrame(sample_data).to_excel(writer, sheet_name='试样列表', index=False)
                 pd.DataFrame(adjustment_data).to_excel(writer, sheet_name='调整记录', index=False)
+                pd.DataFrame(milestone_data).to_excel(writer, sheet_name='关键节点', index=False)
 
             QMessageBox.information(self, '成功', f'导出成功！\n文件保存在: {file_path}')
         except Exception as e:

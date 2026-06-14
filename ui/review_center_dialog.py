@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QGroupBox, QFormLayout)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
-from models import Sample, Adjustment
+from models import Sample, Adjustment, Milestone
 from database import get_session
 
 
@@ -485,6 +485,8 @@ class ReviewCenterDialog(QDialog):
             db.close()
 
     def _on_search(self):
+        self.sample_table.clearSelection()
+        self._load_trace(None)
         self._load_samples()
         self._load_statistics()
 
@@ -494,8 +496,23 @@ class ReviewCenterDialog(QDialog):
         self.direction_filter.setCurrentIndex(0)
         self.failure_filter.setCurrentIndex(0)
         self.status_filter.setCurrentIndex(0)
+        self.sample_table.clearSelection()
+        self._load_trace(None)
         self._load_samples()
         self._load_statistics()
+
+    def _calc_reminder_status(self, sample, today):
+        if sample.status in ('已完成', '已废弃'):
+            return '正常'
+        if not sample.expected_completion_date:
+            return '正常'
+        days_left = (sample.expected_completion_date - today).days
+        if days_left < 0:
+            return '已超期'
+        elif days_left <= 3:
+            return '即将超期'
+        else:
+            return '正常'
 
     def _export_excel(self):
         file_path, _ = QFileDialog.getSaveFileName(
@@ -507,9 +524,11 @@ class ReviewCenterDialog(QDialog):
         db = get_session()
         try:
             samples = self._get_filtered_samples()
+            today = date.today()
 
             sample_data = []
             trace_data = []
+            milestone_data = []
             person_stats_data = []
             direction_stats_data = []
 
@@ -522,6 +541,7 @@ class ReviewCenterDialog(QDialog):
             for sample in samples:
                 person = sample.person_in_charge or '未分配'
                 direction = sample.transformation_direction or '未知'
+                reminder_status = self._calc_reminder_status(sample, today)
 
                 adjustments = db.query(Adjustment).filter(
                     Adjustment.sample_id == sample.id
@@ -564,6 +584,7 @@ class ReviewCenterDialog(QDialog):
                     '改造方向': sample.transformation_direction,
                     '打样日期': sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else '',
                     '预计完成日期': sample.expected_completion_date.strftime('%Y-%m-%d') if sample.expected_completion_date else '',
+                    '提醒状态': reminder_status,
                     '负责人': sample.person_in_charge or '',
                     '试样状态': sample.status,
                     '调整次数': adj_count,
@@ -580,6 +601,21 @@ class ReviewCenterDialog(QDialog):
                         '结果评价': adj.result_evaluation,
                         '失败原因': adj.failure_reason or '',
                         '备注': adj.remark or ''
+                    })
+
+                milestones = db.query(Milestone).filter(
+                    Milestone.sample_id == sample.id
+                ).order_by(Milestone.sort_order, Milestone.id).all()
+
+                for i, ms in enumerate(milestones, 1):
+                    milestone_data.append({
+                        '试样编号': sample.sample_no,
+                        '节点序号': i,
+                        '节点名称': ms.name,
+                        '目标日期': ms.target_date.strftime('%Y-%m-%d') if ms.target_date else '',
+                        '实际完成日期': ms.actual_date.strftime('%Y-%m-%d') if ms.actual_date else '',
+                        '节点状态': ms.status,
+                        '节点说明': ms.description or ''
                     })
 
             for person, stats in sorted(person_stats.items()):
@@ -622,6 +658,7 @@ class ReviewCenterDialog(QDialog):
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 pd.DataFrame(sample_data).to_excel(writer, sheet_name='筛选试样列表', index=False)
                 pd.DataFrame(trace_data).to_excel(writer, sheet_name='调整轨迹明细', index=False)
+                pd.DataFrame(milestone_data).to_excel(writer, sheet_name='关键节点', index=False)
                 pd.DataFrame(person_stats_data).to_excel(writer, sheet_name='负责人统计', index=False)
                 pd.DataFrame(direction_stats_data).to_excel(writer, sheet_name='改造方向统计', index=False)
                 pd.DataFrame(summary_data).to_excel(writer, sheet_name='总体统计概览', index=False)

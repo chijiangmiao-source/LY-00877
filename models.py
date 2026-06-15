@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey, DateTime, Boolean, Float
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -18,6 +18,7 @@ class Sample(Base):
     final_result = Column(String(200), comment='最终采用结果')
     expected_completion_date = Column(Date, comment='预计完成日期')
     reminder_status = Column(String(20), default='正常', comment='提醒状态：正常/即将超期/已超期')
+    expected_price = Column(Integer, default=0, comment='预计售价（分），用于利润预估')
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -74,12 +75,14 @@ class CostRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     sample_id = Column(Integer, ForeignKey('samples.id'), nullable=False)
-    cost_type = Column(String(20), nullable=False, comment='成本类型：旧衣主料/辅料/配件/人工工时')
+    cost_type = Column(String(20), nullable=False, comment='成本类型：旧衣主料/辅料/配件/人工成本')
     item_name = Column(String(100), nullable=False, comment='项目名称')
     specification = Column(String(200), comment='规格/说明')
-    quantity = Column(String(50), comment='用量')
-    unit = Column(String(20), comment='单位')
-    unit_price = Column(Integer, default=0, comment='单价（分）')
+    quantity = Column(String(50), comment='用量（材料类）')
+    unit = Column(String(20), comment='单位（材料类）')
+    unit_price = Column(Integer, default=0, comment='单价（分，材料类）')
+    labor_hours = Column(Float, default=0, comment='工时（小时，人工成本类）')
+    hourly_rate = Column(Integer, default=0, comment='小时工资率（分/小时，人工成本类）')
     subtotal = Column(Integer, default=0, comment='单项成本（分）')
     remark = Column(Text, comment='备注')
     created_at = Column(DateTime, default=datetime.now)

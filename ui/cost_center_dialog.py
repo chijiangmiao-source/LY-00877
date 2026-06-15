@@ -22,58 +22,84 @@ class CostRecordDialog(QDialog):
     def __init__(self, parent=None, cost_record=None, sample_id=None):
         super().__init__(parent)
         self.setWindowTitle('成本记录' if cost_record else '新增成本记录')
-        self.resize(500, 550)
+        self.resize(500, 620)
         self.cost_record = cost_record
         self.sample_id = sample_id
         self._init_ui()
+        self._connect_signals()
         self._load_data()
+        self._on_cost_type_changed()
 
     def _init_ui(self):
         layout = QVBoxLayout()
         form_group = QGroupBox('成本信息')
-        form_layout = QFormLayout()
+        self.form_layout = QFormLayout()
 
         self.cost_type_combo = QComboBox()
-        self.cost_type_combo.addItems(['旧衣主料', '辅料', '配件', '人工工时'])
-        form_layout.addRow('成本类型:', self.cost_type_combo)
+        self.cost_type_combo.addItems(['旧衣主料', '辅料', '配件', '人工成本'])
+        self.form_layout.addRow('成本类型:', self.cost_type_combo)
 
         self.item_name_edit = QLineEdit()
         self.item_name_edit.setPlaceholderText('输入项目名称')
-        form_layout.addRow('项目名称:', self.item_name_edit)
+        self.form_layout.addRow('项目名称:', self.item_name_edit)
 
         self.spec_edit = QLineEdit()
         self.spec_edit.setPlaceholderText('输入规格/说明')
-        form_layout.addRow('规格/说明:', self.spec_edit)
+        self.form_layout.addRow('规格/说明:', self.spec_edit)
+
+        self.material_widget = QWidget()
+        material_layout = QFormLayout(self.material_widget)
+        material_layout.setContentsMargins(0, 0, 0, 0)
 
         self.quantity_edit = QDoubleSpinBox()
         self.quantity_edit.setRange(0, 9999)
         self.quantity_edit.setSingleStep(0.1)
         self.quantity_edit.setDecimals(2)
-        form_layout.addRow('用量:', self.quantity_edit)
+        material_layout.addRow('用量:', self.quantity_edit)
 
         self.unit_edit = QLineEdit()
-        self.unit_edit.setPlaceholderText('如：件、米、条、小时等')
-        form_layout.addRow('单位:', self.unit_edit)
+        self.unit_edit.setPlaceholderText('如：件、米、条等')
+        material_layout.addRow('单位:', self.unit_edit)
 
         self.unit_price_spin = QSpinBox()
         self.unit_price_spin.setRange(0, 999999)
         self.unit_price_spin.setSuffix(' 分')
         self.unit_price_spin.setSingleStep(100)
-        self.unit_price_spin.valueChanged.connect(self._calc_subtotal)
-        form_layout.addRow('单价:', self.unit_price_spin)
+        material_layout.addRow('单价:', self.unit_price_spin)
+
+        self.form_layout.addRow(self.material_widget)
+
+        self.labor_widget = QWidget()
+        labor_layout = QFormLayout(self.labor_widget)
+        labor_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.labor_hours_spin = QDoubleSpinBox()
+        self.labor_hours_spin.setRange(0, 999)
+        self.labor_hours_spin.setSingleStep(0.5)
+        self.labor_hours_spin.setDecimals(2)
+        self.labor_hours_spin.setSuffix(' 小时')
+        labor_layout.addRow('工时:', self.labor_hours_spin)
+
+        self.hourly_rate_spin = QSpinBox()
+        self.hourly_rate_spin.setRange(0, 99999)
+        self.hourly_rate_spin.setSuffix(' 分/小时')
+        self.hourly_rate_spin.setSingleStep(100)
+        labor_layout.addRow('小时工资率:', self.hourly_rate_spin)
+
+        self.form_layout.addRow(self.labor_widget)
 
         self.subtotal_spin = QSpinBox()
         self.subtotal_spin.setRange(0, 9999999)
         self.subtotal_spin.setSuffix(' 分')
         self.subtotal_spin.setSingleStep(100)
-        form_layout.addRow('单项成本:', self.subtotal_spin)
+        self.form_layout.addRow('单项成本:', self.subtotal_spin)
 
         self.remark_edit = QTextEdit()
         self.remark_edit.setPlaceholderText('输入备注信息')
         self.remark_edit.setFixedHeight(80)
-        form_layout.addRow('备注:', self.remark_edit)
+        self.form_layout.addRow('备注:', self.remark_edit)
 
-        form_group.setLayout(form_layout)
+        form_group.setLayout(self.form_layout)
         layout.addWidget(form_group)
 
         self.price_hint_label = QLabel()
@@ -89,40 +115,97 @@ class CostRecordDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _connect_signals(self):
+        self.cost_type_combo.currentTextChanged.connect(self._on_cost_type_changed)
+        self.quantity_edit.valueChanged.connect(self._calc_subtotal)
+        self.unit_price_spin.valueChanged.connect(self._calc_subtotal)
+        self.labor_hours_spin.valueChanged.connect(self._calc_subtotal)
+        self.hourly_rate_spin.valueChanged.connect(self._calc_subtotal)
+
+    def _on_cost_type_changed(self):
+        cost_type = self.cost_type_combo.currentText()
+        is_labor = (cost_type == '人工成本')
+        self.material_widget.setVisible(not is_labor)
+        self.labor_widget.setVisible(is_labor)
+
+        if is_labor:
+            self.item_name_edit.setPlaceholderText('如：剪裁工时、缝制工时等')
+        else:
+            self.item_name_edit.setPlaceholderText('输入项目名称')
+
+        self._calc_subtotal()
+
     def _calc_subtotal(self):
-        qty = self.quantity_edit.value()
-        price = self.unit_price_spin.value()
-        subtotal = int(qty * price)
+        cost_type = self.cost_type_combo.currentText()
+        if cost_type == '人工成本':
+            hours = self.labor_hours_spin.value()
+            rate = self.hourly_rate_spin.value()
+            subtotal = int(hours * rate)
+        else:
+            qty = self.quantity_edit.value()
+            price = self.unit_price_spin.value()
+            subtotal = int(qty * price)
+
         self.subtotal_spin.setValue(subtotal)
         self._update_price_hint()
 
     def _update_price_hint(self):
-        unit_price_yuan = self.unit_price_spin.value() / 100
+        cost_type = self.cost_type_combo.currentText()
         subtotal_yuan = self.subtotal_spin.value() / 100
-        self.price_hint_label.setText(
-            f'单价: ¥{unit_price_yuan:.2f} | 单项成本: ¥{subtotal_yuan:.2f}'
-        )
+
+        if cost_type == '人工成本':
+            hours = self.labor_hours_spin.value()
+            rate_yuan = self.hourly_rate_spin.value() / 100
+            self.price_hint_label.setText(
+                f'工时: {hours} 小时 | 工资率: ¥{rate_yuan:.2f}/小时 | 人工成本: ¥{subtotal_yuan:.2f}'
+            )
+        else:
+            unit_price_yuan = self.unit_price_spin.value() / 100
+            qty = self.quantity_edit.value()
+            unit = self.unit_edit.text() or ''
+            self.price_hint_label.setText(
+                f'用量: {qty} {unit} | 单价: ¥{unit_price_yuan:.2f} | 单项成本: ¥{subtotal_yuan:.2f}'
+            )
 
     def _load_data(self):
         if self.cost_record:
-            self.cost_type_combo.setCurrentText(self.cost_record.cost_type)
+            if self.cost_record.cost_type == '人工成本':
+                self.cost_type_combo.setCurrentText('人工成本')
+            else:
+                self.cost_type_combo.setCurrentText(self.cost_record.cost_type)
             self.item_name_edit.setText(self.cost_record.item_name)
             self.spec_edit.setText(self.cost_record.specification or '')
+
             try:
                 self.quantity_edit.setValue(float(self.cost_record.quantity or 0))
             except:
                 self.quantity_edit.setValue(0)
             self.unit_edit.setText(self.cost_record.unit or '')
             self.unit_price_spin.setValue(self.cost_record.unit_price or 0)
+
+            self.labor_hours_spin.setValue(self.cost_record.labor_hours or 0)
+            self.hourly_rate_spin.setValue(self.cost_record.hourly_rate or 0)
+
+            if self.cost_record.cost_type == '人工成本' and self.cost_record.labor_hours == 0:
+                try:
+                    self.labor_hours_spin.setValue(float(self.cost_record.quantity or 0))
+                except:
+                    pass
+                if self.cost_record.hourly_rate == 0 and self.cost_record.unit_price > 0:
+                    self.hourly_rate_spin.setValue(self.cost_record.unit_price)
+
             self.subtotal_spin.setValue(self.cost_record.subtotal or 0)
             self.remark_edit.setPlainText(self.cost_record.remark or '')
+
         self._update_price_hint()
 
     def _on_ok(self):
         if not self.item_name_edit.text().strip():
             QMessageBox.warning(self, '提示', '请输入项目名称')
             return
-        if not self.unit_edit.text().strip():
+
+        cost_type = self.cost_type_combo.currentText()
+        if cost_type != '人工成本' and not self.unit_edit.text().strip():
             QMessageBox.warning(self, '提示', '请输入单位')
             return
 
@@ -131,26 +214,49 @@ class CostRecordDialog(QDialog):
             if self.cost_record:
                 cr = db.query(CostRecord).filter(CostRecord.id == self.cost_record.id).first()
                 if cr:
-                    cr.cost_type = self.cost_type_combo.currentText()
+                    cr.cost_type = cost_type
                     cr.item_name = self.item_name_edit.text().strip()
                     cr.specification = self.spec_edit.text().strip()
-                    cr.quantity = str(self.quantity_edit.value())
-                    cr.unit = self.unit_edit.text().strip()
-                    cr.unit_price = self.unit_price_spin.value()
+
+                    if cost_type == '人工成本':
+                        cr.labor_hours = self.labor_hours_spin.value()
+                        cr.hourly_rate = self.hourly_rate_spin.value()
+                        cr.quantity = None
+                        cr.unit = None
+                        cr.unit_price = 0
+                    else:
+                        cr.quantity = str(self.quantity_edit.value())
+                        cr.unit = self.unit_edit.text().strip()
+                        cr.unit_price = self.unit_price_spin.value()
+                        cr.labor_hours = 0
+                        cr.hourly_rate = 0
+
                     cr.subtotal = self.subtotal_spin.value()
                     cr.remark = self.remark_edit.toPlainText().strip()
             else:
-                cr = CostRecord(
-                    sample_id=self.sample_id,
-                    cost_type=self.cost_type_combo.currentText(),
-                    item_name=self.item_name_edit.text().strip(),
-                    specification=self.spec_edit.text().strip(),
-                    quantity=str(self.quantity_edit.value()),
-                    unit=self.unit_edit.text().strip(),
-                    unit_price=self.unit_price_spin.value(),
-                    subtotal=self.subtotal_spin.value(),
-                    remark=self.remark_edit.toPlainText().strip()
-                )
+                if cost_type == '人工成本':
+                    cr = CostRecord(
+                        sample_id=self.sample_id,
+                        cost_type=cost_type,
+                        item_name=self.item_name_edit.text().strip(),
+                        specification=self.spec_edit.text().strip(),
+                        labor_hours=self.labor_hours_spin.value(),
+                        hourly_rate=self.hourly_rate_spin.value(),
+                        subtotal=self.subtotal_spin.value(),
+                        remark=self.remark_edit.toPlainText().strip()
+                    )
+                else:
+                    cr = CostRecord(
+                        sample_id=self.sample_id,
+                        cost_type=cost_type,
+                        item_name=self.item_name_edit.text().strip(),
+                        specification=self.spec_edit.text().strip(),
+                        quantity=str(self.quantity_edit.value()),
+                        unit=self.unit_edit.text().strip(),
+                        unit_price=self.unit_price_spin.value(),
+                        subtotal=self.subtotal_spin.value(),
+                        remark=self.remark_edit.toPlainText().strip()
+                    )
                 db.add(cr)
 
             db.commit()
@@ -258,7 +364,7 @@ class CostCenterDialog(QDialog):
         filter_layout.addWidget(QLabel('开始日期:'))
         self.start_date = QDateEdit()
         self.start_date.setCalendarPopup(True)
-        self.start_date.setDate(date.today().replace(day=1))
+        self.start_date.setDate(date(2024, 1, 1))
         filter_layout.addWidget(self.start_date)
 
         filter_layout.addWidget(QLabel('结束日期:'))
@@ -350,7 +456,7 @@ class CostCenterDialog(QDialog):
         self.parts_label = QLabel('配件: ¥0.00')
         self.parts_label.setStyleSheet('font-size: 13px; font-weight: bold; color: #ffc107;')
         summary_layout.addWidget(self.parts_label)
-        self.labor_label = QLabel('人工工时: ¥0.00')
+        self.labor_label = QLabel('人工成本: ¥0.00')
         self.labor_label.setStyleSheet('font-size: 13px; font-weight: bold; color: #dc3545;')
         summary_layout.addWidget(self.labor_label)
         self.total_label = QLabel('总成本: ¥0.00')
@@ -609,7 +715,7 @@ class CostCenterDialog(QDialog):
             close_db = True
         try:
             records = db.query(CostRecord).filter(CostRecord.sample_id == sample_id).all()
-            cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工工时': 0}
+            cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
             for r in records:
                 cost_by_type[r.cost_type] += r.subtotal or 0
             return cost_by_type
@@ -659,9 +765,9 @@ class CostCenterDialog(QDialog):
             db.close()
 
     def _load_structure_charts(self, samples, db):
-        cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工工时': 0}
-        type_record_count = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工工时': 0}
-        type_sample_count = {'旧衣主料': set(), '辅料': set(), '配件': set(), '人工工时': set()}
+        cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
+        type_record_count = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
+        type_sample_count = {'旧衣主料': set(), '辅料': set(), '配件': set(), '人工成本': set()}
 
         for sample in samples:
             records = db.query(CostRecord).filter(CostRecord.sample_id == sample.id).all()
@@ -741,7 +847,7 @@ class CostCenterDialog(QDialog):
 
             cost_by_type = self._get_cost_by_type(sample.id, db)
             material_efficiency = self._calc_material_efficiency(cost_by_type)
-            estimated_profit = self._calc_estimated_profit(total_cost, sample.transformation_direction)
+            estimated_profit = self._calc_estimated_profit(total_cost, sample)
             total_profit_all += estimated_profit
 
             if sample.sample_date:
@@ -795,29 +901,28 @@ class CostCenterDialog(QDialog):
             return 100
         return min(100, (1 - material_cost / total_cost) * 100)
 
-    def _calc_estimated_profit(self, total_cost, direction):
-        base_prices = {
-            '改造成牛仔背包': 20000,
-            '改造成购物袋': 8000,
-            '改造成马甲': 15000,
-            '改造成抱枕套': 6000,
-            '改造成围裙': 5000,
-            '改造成牛仔裙': 18000,
-        }
-        base_price = base_prices.get(direction, 10000)
-        return max(0, base_price - total_cost)
+    def _calc_estimated_profit(self, total_cost, sample):
+        expected_price = sample.expected_price or 0
+        if expected_price == 0:
+            base_prices = {
+                '改造成牛仔背包': 20000,
+                '改造成购物袋': 8000,
+                '改造成马甲': 15000,
+                '改造成抱枕套': 6000,
+                '改造成围裙': 5000,
+                '改造成牛仔裙': 18000,
+            }
+            expected_price = base_prices.get(sample.transformation_direction, 10000)
+        return max(0, expected_price - total_cost)
 
     def _calc_labor_hours(self, sample_id, db):
         records = db.query(CostRecord).filter(
             CostRecord.sample_id == sample_id,
-            CostRecord.cost_type == '人工工时'
+            CostRecord.cost_type == '人工成本'
         ).all()
         total_hours = 0
         for r in records:
-            try:
-                total_hours += float(r.quantity or 0)
-            except:
-                pass
+            total_hours += r.labor_hours or 0
         return total_hours
 
     def _fill_type_stats(self, type_stats):
@@ -1059,7 +1164,7 @@ class CostCenterDialog(QDialog):
             ).order_by(CostRecord.cost_type, CostRecord.id).all()
 
             self.cost_table.setRowCount(len(records))
-            cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工工时': 0}
+            cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
 
             for row, record in enumerate(records):
                 self.cost_table.setItem(row, 0, QTableWidgetItem(str(record.id)))
@@ -1069,7 +1174,7 @@ class CostCenterDialog(QDialog):
                     '旧衣主料': QColor(23, 162, 184),
                     '辅料': QColor(40, 167, 69),
                     '配件': QColor(255, 193, 7),
-                    '人工工时': QColor(220, 53, 69)
+                    '人工成本': QColor(220, 53, 69)
                 }
                 type_item.setForeground(QBrush(type_colors.get(record.cost_type, QColor(0, 0, 0))))
                 self.cost_table.setItem(row, 1, type_item)
@@ -1094,7 +1199,7 @@ class CostCenterDialog(QDialog):
             self.material_cost_label.setText(f'旧衣主料: ¥{cost_by_type["旧衣主料"]/100:.2f}')
             self.accessories_label.setText(f'辅料: ¥{cost_by_type["辅料"]/100:.2f}')
             self.parts_label.setText(f'配件: ¥{cost_by_type["配件"]/100:.2f}')
-            self.labor_label.setText(f'人工工时: ¥{cost_by_type["人工工时"]/100:.2f}')
+            self.labor_label.setText(f'人工成本: ¥{cost_by_type["人工成本"]/100:.2f}')
             total = sum(cost_by_type.values())
             self.total_label.setText(f'总成本: ¥{total/100:.2f}')
         finally:
@@ -1257,7 +1362,7 @@ class CostCenterDialog(QDialog):
                 '旧衣主料(元)': cost_by_type['旧衣主料'] / 100,
                 '辅料(元)': cost_by_type['辅料'] / 100,
                 '配件(元)': cost_by_type['配件'] / 100,
-                '人工工时(元)': cost_by_type['人工工时'] / 100,
+                '人工成本(元)': cost_by_type['人工成本'] / 100,
                 '总成本(元)': total_cost / 100,
                 '预警状态': '有预警' if has_warning else '正常'
             })
@@ -1293,7 +1398,7 @@ class CostCenterDialog(QDialog):
             total_cost = self._calculate_sample_total_cost(sample.id, db)
             cost_by_type = self._get_cost_by_type(sample.id, db)
             material_efficiency = self._calc_material_efficiency(cost_by_type)
-            estimated_profit = self._calc_estimated_profit(total_cost, sample.transformation_direction)
+            estimated_profit = self._calc_estimated_profit(total_cost, sample)
 
             if sample.sample_date:
                 month_key = sample.sample_date.strftime('%Y-%m')

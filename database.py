@@ -25,6 +25,8 @@ def _migrate_db():
             conn.execute(text('ALTER TABLE samples ADD COLUMN expected_completion_date DATE'))
         if 'reminder_status' not in samples_columns:
             conn.execute(text("ALTER TABLE samples ADD COLUMN reminder_status VARCHAR(20) DEFAULT '正常'"))
+        if 'expected_price' not in samples_columns:
+            conn.execute(text('ALTER TABLE samples ADD COLUMN expected_price INTEGER DEFAULT 0'))
 
         adjustments_columns = [col['name'] for col in inspector.get_columns('adjustments')]
         if 'failure_reason' not in adjustments_columns:
@@ -41,6 +43,8 @@ def _migrate_db():
                     quantity VARCHAR(50),
                     unit VARCHAR(20),
                     unit_price INTEGER DEFAULT 0,
+                    labor_hours REAL DEFAULT 0,
+                    hourly_rate INTEGER DEFAULT 0,
                     subtotal INTEGER DEFAULT 0,
                     remark TEXT,
                     created_at DATETIME,
@@ -48,6 +52,12 @@ def _migrate_db():
                     FOREIGN KEY (sample_id) REFERENCES samples (id)
                 )
             '''))
+        else:
+            cost_columns = [col['name'] for col in inspector.get_columns('cost_records')]
+            if 'labor_hours' not in cost_columns:
+                conn.execute(text('ALTER TABLE cost_records ADD COLUMN labor_hours REAL DEFAULT 0'))
+            if 'hourly_rate' not in cost_columns:
+                conn.execute(text('ALTER TABLE cost_records ADD COLUMN hourly_rate INTEGER DEFAULT 0'))
 
         if 'cost_warnings' not in inspector.get_table_names():
             conn.execute(text('''

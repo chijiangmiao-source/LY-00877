@@ -1,15 +1,12 @@
-import os
-import tempfile
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QLabel, QPushButton, QComboBox, QWidget)
-from PyQt6.QtCore import QUrl
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings
-import pandas as pd
 from pyecharts.charts import Pie, Bar, Line
 from pyecharts import options as opts
 from models import Sample, Adjustment
 from database import get_session
+from services.stats_service import (calc_sample_status_distribution, calc_failure_reason_distribution,
+                                     calc_type_distribution, calc_direction_distribution, calc_monthly_sample_trend)
+from utils.chart_helper import (create_web_view, load_chart, get_empty_html, cleanup_temp_files)
 
 
 class StatsDialog(QDialog):
@@ -20,15 +17,6 @@ class StatsDialog(QDialog):
         self._temp_files = []
         self._init_ui()
         self._load_stats()
-
-    def _create_web_view(self):
-        view = QWebEngineView()
-        settings = view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
-        return view
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -59,7 +47,7 @@ class StatsDialog(QDialog):
     def _create_status_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.status_view = self._create_web_view()
+        self.status_view = create_web_view()
         layout.addWidget(self.status_view)
         widget.setLayout(layout)
         return widget
@@ -67,7 +55,7 @@ class StatsDialog(QDialog):
     def _create_failure_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.failure_view = self._create_web_view()
+        self.failure_view = create_web_view()
         layout.addWidget(self.failure_view)
         widget.setLayout(layout)
         return widget
@@ -75,7 +63,7 @@ class StatsDialog(QDialog):
     def _create_type_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.type_view = self._create_web_view()
+        self.type_view = create_web_view()
         layout.addWidget(self.type_view)
         widget.setLayout(layout)
         return widget
@@ -83,7 +71,7 @@ class StatsDialog(QDialog):
     def _create_direction_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.direction_view = self._create_web_view()
+        self.direction_view = create_web_view()
         layout.addWidget(self.direction_view)
         widget.setLayout(layout)
         return widget
@@ -91,7 +79,7 @@ class StatsDialog(QDialog):
     def _create_monthly_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
-        self.monthly_view = self._create_web_view()
+        self.monthly_view = create_web_view()
         layout.addWidget(self.monthly_view)
         widget.setLayout(layout)
         return widget
@@ -111,10 +99,7 @@ class StatsDialog(QDialog):
             db.close()
 
     def _render_status_chart(self, samples):
-        status_counts = {}
-        for s in samples:
-            status = s.status or '未知'
-            status_counts[status] = status_counts.get(status, 0) + 1
+        status_counts = calc_sample_status_distribution(samples)
 
         pie = (
             Pie()
@@ -123,21 +108,13 @@ class StatsDialog(QDialog):
             .set_series_opts(label_opts=opts.LabelOpts(formatter='{b}: {c} ({d}%)'))
         )
 
-        self._load_chart(self.status_view, pie)
+        load_chart(self.status_view, pie, self._temp_files)
 
     def _render_failure_chart(self, adjustments):
-        failure_remarks = {}
-        for adj in adjustments:
-            if adj.result_evaluation == '失败' and adj.remark:
-                remark = adj.remark.strip()
-                key = remark[:20] + '...' if len(remark) > 20 else remark
-                failure_remarks[key] = failure_remarks.get(key, 0) + 1
+        failure_remarks = calc_failure_reason_distribution(adjustments)
 
         if not failure_remarks:
-            self.failure_view.setHtml(
-                '<html><body style="display:flex;justify-content:center;align-items:center;height:100vh;">'
-                '<p style="font-size:18px;color:#999;">暂无失败记录</p></body></html>'
-            )
+            self.failure_view.setHtml(get_empty_html('暂无失败记录'))
             return
 
         bar = (
@@ -150,13 +127,10 @@ class StatsDialog(QDialog):
             )
         )
 
-        self._load_chart(self.failure_view, bar)
+        load_chart(self.failure_view, bar, self._temp_files)
 
     def _render_type_chart(self, samples):
-        type_counts = {}
-        for s in samples:
-            t = s.original_type or '未知'
-            type_counts[t] = type_counts.get(t, 0) + 1
+        type_counts = calc_type_distribution(samples)
 
         pie = (
             Pie()
@@ -165,13 +139,10 @@ class StatsDialog(QDialog):
             .set_series_opts(label_opts=opts.LabelOpts(formatter='{b}: {c} ({d}%)'))
         )
 
-        self._load_chart(self.type_view, pie)
+        load_chart(self.type_view, pie, self._temp_files)
 
     def _render_direction_chart(self, samples):
-        direction_counts = {}
-        for s in samples:
-            d = s.transformation_direction or '未知'
-            direction_counts[d] = direction_counts.get(d, 0) + 1
+        direction_counts = calc_direction_distribution(samples)
 
         bar = (
             Bar()
@@ -183,14 +154,10 @@ class StatsDialog(QDialog):
             )
         )
 
-        self._load_chart(self.direction_view, bar)
+        load_chart(self.direction_view, bar, self._temp_files)
 
     def _render_monthly_chart(self, samples):
-        monthly_counts = {}
-        for s in samples:
-            if s.sample_date:
-                month_key = s.sample_date.strftime('%Y-%m')
-                monthly_counts[month_key] = monthly_counts.get(month_key, 0) + 1
+        monthly_counts = calc_monthly_sample_trend(samples)
 
         sorted_months = sorted(monthly_counts.keys())
         counts = [monthly_counts[m] for m in sorted_months]
@@ -202,23 +169,8 @@ class StatsDialog(QDialog):
             .set_global_opts(title_opts=opts.TitleOpts(title='月度试样趋势'))
         )
 
-        self._load_chart(self.monthly_view, line)
-
-    def _load_chart(self, web_view, chart):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8')
-        temp_file.close()
-        chart.render(temp_file.name)
-
-        with open(temp_file.name, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-
-        web_view.setHtml(html_content, QUrl('https://assets.pyecharts.org/'))
-        self._temp_files.append(temp_file.name)
+        load_chart(self.monthly_view, line, self._temp_files)
 
     def closeEvent(self, event):
-        for f in self._temp_files:
-            try:
-                os.unlink(f)
-            except:
-                pass
+        cleanup_temp_files(self._temp_files)
         super().closeEvent(event)

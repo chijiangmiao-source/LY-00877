@@ -1,4 +1,3 @@
-import pandas as pd
 from datetime import date
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QTableWidget, QTableWidgetItem, QPushButton,
@@ -7,8 +6,15 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QGroupBox, QFormLayout)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
-from models import Sample, Adjustment, Milestone
+from models import Sample, Adjustment
 from database import get_session
+from services.sample_service import (calc_reminder_status, get_sample_adjustments,
+                                     get_sample_milestones, get_distinct_filter_options,
+                                     get_distinct_failure_reasons, get_sample_by_id)
+from services.stats_service import calc_review_statistics
+from services.export_service import export_review_data_excel
+from utils.table_helper import (get_selected_id, create_colored_item, truncate_text)
+from utils.filter_helper import apply_sample_filters
 
 
 class ReviewCenterDialog(QDialog):
@@ -200,163 +206,90 @@ class ReviewCenterDialog(QDialog):
         return widget
 
     def _load_filter_options(self):
-        db = get_session()
-        try:
-            self.person_filter.addItem('全部')
-            persons = db.query(Sample.person_in_charge).filter(
-                Sample.person_in_charge.isnot(None)
-            ).distinct().all()
-            for (p,) in persons:
-                if p:
-                    self.person_filter.addItem(p)
+        options = get_distinct_filter_options()
+        failure_reasons = get_distinct_failure_reasons()
 
-            self.type_filter.addItem('全部')
-            types = db.query(Sample.original_type).distinct().all()
-            for (t,) in types:
-                if t:
-                    self.type_filter.addItem(t)
+        self.person_filter.addItem('全部')
+        for p in options['persons']:
+            self.person_filter.addItem(p)
 
-            self.direction_filter.addItem('全部')
-            directions = db.query(Sample.transformation_direction).distinct().all()
-            for (d,) in directions:
-                if d:
-                    self.direction_filter.addItem(d)
+        self.type_filter.addItem('全部')
+        for t in options['types']:
+            self.type_filter.addItem(t)
 
-            self.failure_filter.addItem('全部')
-            failure_reasons = db.query(Adjustment.failure_reason).filter(
-                Adjustment.failure_reason.isnot(None)
-            ).distinct().all()
-            for (r,) in failure_reasons:
-                if r:
-                    self.failure_filter.addItem(r)
+        self.direction_filter.addItem('全部')
+        for d in options['directions']:
+            self.direction_filter.addItem(d)
 
-            self.status_filter.addItem('全部')
-            self.status_filter.addItems(['打样中', '版型调整中', '版型定稿', '已完成', '已废弃'])
-        finally:
-            db.close()
+        self.failure_filter.addItem('全部')
+        for r in failure_reasons:
+            self.failure_filter.addItem(r)
+
+        self.status_filter.addItem('全部')
+        self.status_filter.addItems(['打样中', '版型调整中', '版型定稿', '已完成', '已废弃'])
 
     def _get_filtered_samples(self):
         db = get_session()
         try:
             query = db.query(Sample)
-
-            person = self.person_filter.currentText()
-            if person != '全部':
-                query = query.filter(Sample.person_in_charge == person)
-
-            orig_type = self.type_filter.currentText()
-            if orig_type != '全部':
-                query = query.filter(Sample.original_type == orig_type)
-
-            direction = self.direction_filter.currentText()
-            if direction != '全部':
-                query = query.filter(Sample.transformation_direction == direction)
-
-            status = self.status_filter.currentText()
-            if status != '全部':
-                query = query.filter(Sample.status == status)
-
+            query = apply_sample_filters(
+                query,
+                type_text=self.type_filter.currentText(),
+                direction=self.direction_filter.currentText(),
+                person=self.person_filter.currentText(),
+                status=self.status_filter.currentText()
+            )
             failure_reason = self.failure_filter.currentText()
             if failure_reason != '全部':
                 query = query.join(Adjustment).filter(
                     Adjustment.failure_reason == failure_reason
                 )
-
-            samples = query.order_by(Sample.sample_date.desc(), Sample.id.desc()).all()
-            return samples
+            return query.order_by(Sample.sample_date.desc(), Sample.id.desc()).all()
         finally:
             db.close()
 
     def _load_samples(self):
         samples = self._get_filtered_samples()
-        db = get_session()
-        try:
-            self.sample_table.setRowCount(len(samples))
-            for row, sample in enumerate(samples):
-                adj_count = db.query(Adjustment).filter(
-                    Adjustment.sample_id == sample.id
-                ).count()
+        self.sample_table.setRowCount(len(samples))
+        for row, sample in enumerate(samples):
+            adjustments = get_sample_adjustments(sample.id)
+            adj_count = len(adjustments)
 
-                self.sample_table.setItem(row, 0, QTableWidgetItem(str(sample.id)))
-                self.sample_table.setItem(row, 1, QTableWidgetItem(sample.sample_no))
-                self.sample_table.setItem(row, 2, QTableWidgetItem(sample.original_type))
-                self.sample_table.setItem(row, 3, QTableWidgetItem(sample.transformation_direction))
-                self.sample_table.setItem(row, 4, QTableWidgetItem(
-                    sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else ''
-                ))
-                self.sample_table.setItem(row, 5, QTableWidgetItem(sample.person_in_charge or ''))
+            self.sample_table.setItem(row, 0, QTableWidgetItem(str(sample.id)))
+            self.sample_table.setItem(row, 1, QTableWidgetItem(sample.sample_no))
+            self.sample_table.setItem(row, 2, QTableWidgetItem(sample.original_type))
+            self.sample_table.setItem(row, 3, QTableWidgetItem(sample.transformation_direction))
+            self.sample_table.setItem(row, 4, QTableWidgetItem(
+                sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else ''
+            ))
+            self.sample_table.setItem(row, 5, QTableWidgetItem(sample.person_in_charge or ''))
 
+            if sample.status == '已完成':
+                status_item = create_colored_item(sample.status, QColor(200, 255, 200))
+            elif sample.status == '已废弃':
+                status_item = create_colored_item(sample.status, QColor(255, 200, 200))
+            else:
                 status_item = QTableWidgetItem(sample.status)
-                if sample.status == '已完成':
-                    status_item.setBackground(QBrush(QColor(200, 255, 200)))
-                elif sample.status == '已废弃':
-                    status_item.setBackground(QBrush(QColor(255, 200, 200)))
-                self.sample_table.setItem(row, 6, status_item)
+            self.sample_table.setItem(row, 6, status_item)
 
-                self.sample_table.setItem(row, 7, QTableWidgetItem(str(adj_count)))
+            self.sample_table.setItem(row, 7, QTableWidgetItem(str(adj_count)))
 
-            self.sample_table.resizeColumnsToContents()
-        finally:
-            db.close()
+        self.sample_table.resizeColumnsToContents()
 
     def _load_statistics(self):
         samples = self._get_filtered_samples()
         db = get_session()
         try:
-            person_stats = {}
-            direction_stats = {}
-            total_finalized = 0
-            total_failed = 0
-            total_adjustments = 0
-
-            for sample in samples:
-                person = sample.person_in_charge or '未分配'
-                direction = sample.transformation_direction or '未知'
-
-                adjustments = db.query(Adjustment).filter(
-                    Adjustment.sample_id == sample.id
-                ).all()
-                adj_count = len(adjustments)
-                has_failure = any(adj.result_evaluation == '失败' for adj in adjustments)
-                is_finalized = sample.status in ('版型定稿', '已完成')
-
-                if person not in person_stats:
-                    person_stats[person] = {
-                        'total': 0, 'finalized': 0, 'failed': 0, 'adjustments': 0
-                    }
-                person_stats[person]['total'] += 1
-                person_stats[person]['adjustments'] += adj_count
-                if is_finalized:
-                    person_stats[person]['finalized'] += 1
-                if has_failure:
-                    person_stats[person]['failed'] += 1
-
-                if direction not in direction_stats:
-                    direction_stats[direction] = {
-                        'total': 0, 'finalized': 0, 'failed': 0, 'adjustments': 0
-                    }
-                direction_stats[direction]['total'] += 1
-                direction_stats[direction]['adjustments'] += adj_count
-                if is_finalized:
-                    direction_stats[direction]['finalized'] += 1
-                if has_failure:
-                    direction_stats[direction]['failed'] += 1
-
-                total_adjustments += adj_count
-                if is_finalized:
-                    total_finalized += 1
-                if has_failure:
-                    total_failed += 1
-
-            self._fill_person_stats(person_stats)
-            self._fill_direction_stats(direction_stats)
+            stats = calc_review_statistics(samples, db)
+            self._fill_person_stats(stats['person_stats'])
+            self._fill_direction_stats(stats['direction_stats'])
 
             total = len(samples)
             self.total_label.setText(f'试样总数: {total}')
             if total > 0:
-                self.finalized_label.setText(f'定稿率: {total_finalized/total*100:.1f}%')
-                self.failure_label.setText(f'失败率: {total_failed/total*100:.1f}%')
-                self.avg_adjust_label.setText(f'平均调整次数: {total_adjustments/total:.1f}')
+                self.finalized_label.setText(f"定稿率: {stats['total_finalized']/total*100:.1f}%")
+                self.failure_label.setText(f"失败率: {stats['total_failed']/total*100:.1f}%")
+                self.avg_adjust_label.setText(f"平均调整次数: {stats['total_adjustments']/total:.1f}")
             else:
                 self.finalized_label.setText('定稿率: 0%')
                 self.failure_label.setText('失败率: 0%')
@@ -375,18 +308,20 @@ class ReviewCenterDialog(QDialog):
             self.person_stats_table.setItem(row, 0, QTableWidgetItem(person))
             self.person_stats_table.setItem(row, 1, QTableWidgetItem(str(total)))
 
-            finalized_item = QTableWidgetItem(f'{finalized_rate:.1f}%')
             if finalized_rate >= 80:
-                finalized_item.setBackground(QBrush(QColor(200, 255, 200)))
+                finalized_item = create_colored_item(f'{finalized_rate:.1f}%', QColor(200, 255, 200))
             elif finalized_rate < 50:
-                finalized_item.setBackground(QBrush(QColor(255, 200, 200)))
+                finalized_item = create_colored_item(f'{finalized_rate:.1f}%', QColor(255, 200, 200))
+            else:
+                finalized_item = QTableWidgetItem(f'{finalized_rate:.1f}%')
             self.person_stats_table.setItem(row, 2, finalized_item)
 
-            failed_item = QTableWidgetItem(f'{failed_rate:.1f}%')
             if failed_rate > 30:
-                failed_item.setBackground(QBrush(QColor(255, 200, 200)))
+                failed_item = create_colored_item(f'{failed_rate:.1f}%', QColor(255, 200, 200))
             elif failed_rate < 10:
-                failed_item.setBackground(QBrush(QColor(200, 255, 200)))
+                failed_item = create_colored_item(f'{failed_rate:.1f}%', QColor(200, 255, 200))
+            else:
+                failed_item = QTableWidgetItem(f'{failed_rate:.1f}%')
             self.person_stats_table.setItem(row, 3, failed_item)
 
             self.person_stats_table.setItem(row, 4, QTableWidgetItem(f'{avg_adj:.1f}'))
@@ -404,18 +339,20 @@ class ReviewCenterDialog(QDialog):
             self.direction_stats_table.setItem(row, 0, QTableWidgetItem(direction))
             self.direction_stats_table.setItem(row, 1, QTableWidgetItem(str(total)))
 
-            finalized_item = QTableWidgetItem(f'{finalized_rate:.1f}%')
             if finalized_rate >= 80:
-                finalized_item.setBackground(QBrush(QColor(200, 255, 200)))
+                finalized_item = create_colored_item(f'{finalized_rate:.1f}%', QColor(200, 255, 200))
             elif finalized_rate < 50:
-                finalized_item.setBackground(QBrush(QColor(255, 200, 200)))
+                finalized_item = create_colored_item(f'{finalized_rate:.1f}%', QColor(255, 200, 200))
+            else:
+                finalized_item = QTableWidgetItem(f'{finalized_rate:.1f}%')
             self.direction_stats_table.setItem(row, 2, finalized_item)
 
-            failed_item = QTableWidgetItem(f'{failed_rate:.1f}%')
             if failed_rate > 30:
-                failed_item.setBackground(QBrush(QColor(255, 200, 200)))
+                failed_item = create_colored_item(f'{failed_rate:.1f}%', QColor(255, 200, 200))
             elif failed_rate < 10:
-                failed_item.setBackground(QBrush(QColor(200, 255, 200)))
+                failed_item = create_colored_item(f'{failed_rate:.1f}%', QColor(200, 255, 200))
+            else:
+                failed_item = QTableWidgetItem(f'{failed_rate:.1f}%')
             self.direction_stats_table.setItem(row, 3, failed_item)
 
             self.direction_stats_table.setItem(row, 4, QTableWidgetItem(f'{avg_adj:.1f}'))
@@ -423,15 +360,8 @@ class ReviewCenterDialog(QDialog):
         self.direction_stats_table.resizeColumnsToContents()
 
     def _on_sample_selected(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         self._load_trace(sample_id)
-
-    def _get_selected_sample_id(self):
-        selected = self.sample_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.sample_table.item(row, 0).text())
 
     def _load_trace(self, sample_id):
         self.trace_table.setRowCount(0)
@@ -441,48 +371,41 @@ class ReviewCenterDialog(QDialog):
         if not sample_id:
             return
 
-        db = get_session()
-        try:
-            sample = db.query(Sample).filter(Sample.id == sample_id).first()
-            if not sample:
-                return
+        sample = get_sample_by_id(sample_id)
+        if not sample:
+            return
 
-            self.final_result_label.setText(sample.final_result or '-')
+        self.final_result_label.setText(sample.final_result or '-')
 
-            adjustments = db.query(Adjustment).filter(
-                Adjustment.sample_id == sample_id
-            ).order_by(Adjustment.adjust_date, Adjustment.id).all()
+        adjustments = get_sample_adjustments(sample_id)
 
-            self.trace_table.setRowCount(len(adjustments))
-            remarks = []
-            for i, adj in enumerate(adjustments):
-                self.trace_table.setItem(i, 0, QTableWidgetItem(f'第{i+1}版'))
-                self.trace_table.setItem(i, 1, QTableWidgetItem(
-                    adj.adjust_date.strftime('%Y-%m-%d') if adj.adjust_date else ''
-                ))
-                self.trace_table.setItem(i, 2, QTableWidgetItem(adj.adjust_part))
-                self.trace_table.setItem(i, 3, QTableWidgetItem(adj.adjust_method))
+        self.trace_table.setRowCount(len(adjustments))
+        remarks = []
+        for i, adj in enumerate(adjustments):
+            self.trace_table.setItem(i, 0, QTableWidgetItem(f'第{i+1}版'))
+            self.trace_table.setItem(i, 1, QTableWidgetItem(
+                adj.adjust_date.strftime('%Y-%m-%d') if adj.adjust_date else ''
+            ))
+            self.trace_table.setItem(i, 2, QTableWidgetItem(adj.adjust_part))
+            self.trace_table.setItem(i, 3, QTableWidgetItem(adj.adjust_method))
 
-                eval_item = QTableWidgetItem(adj.result_evaluation)
-                if adj.result_evaluation == '失败':
-                    eval_item.setBackground(QBrush(QColor(255, 150, 150)))
-                elif adj.result_evaluation == '成功':
-                    eval_item.setBackground(QBrush(QColor(150, 255, 150)))
-                else:
-                    eval_item.setBackground(QBrush(QColor(255, 255, 150)))
-                self.trace_table.setItem(i, 4, eval_item)
+            if adj.result_evaluation == '失败':
+                eval_item = create_colored_item(adj.result_evaluation, QColor(255, 150, 150))
+            elif adj.result_evaluation == '成功':
+                eval_item = create_colored_item(adj.result_evaluation, QColor(150, 255, 150))
+            else:
+                eval_item = create_colored_item(adj.result_evaluation, QColor(255, 255, 150))
+            self.trace_table.setItem(i, 4, eval_item)
 
-                self.trace_table.setItem(i, 5, QTableWidgetItem(adj.failure_reason or ''))
+            self.trace_table.setItem(i, 5, QTableWidgetItem(adj.failure_reason or ''))
 
-                if adj.remark:
-                    remarks.append(f'第{i+1}版: {adj.remark}')
+            if adj.remark:
+                remarks.append(f'第{i+1}版: {adj.remark}')
 
-            if remarks:
-                self.remark_detail_label.setText('\n'.join(remarks))
+        if remarks:
+            self.remark_detail_label.setText('\n'.join(remarks))
 
-            self.trace_table.resizeColumnsToContents()
-        finally:
-            db.close()
+        self.trace_table.resizeColumnsToContents()
 
     def _on_search(self):
         self.sample_table.clearSelection()
@@ -501,19 +424,6 @@ class ReviewCenterDialog(QDialog):
         self._load_samples()
         self._load_statistics()
 
-    def _calc_reminder_status(self, sample, today):
-        if sample.status in ('已完成', '已废弃'):
-            return '正常'
-        if not sample.expected_completion_date:
-            return '正常'
-        days_left = (sample.expected_completion_date - today).days
-        if days_left < 0:
-            return '已超期'
-        elif days_left <= 3:
-            return '即将超期'
-        else:
-            return '正常'
-
     def _export_excel(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self, '导出复盘数据', '试样复盘数据.xlsx', 'Excel文件 (*.xlsx)'
@@ -525,144 +435,7 @@ class ReviewCenterDialog(QDialog):
         try:
             samples = self._get_filtered_samples()
             today = date.today()
-
-            sample_data = []
-            trace_data = []
-            milestone_data = []
-            person_stats_data = []
-            direction_stats_data = []
-
-            person_stats = {}
-            direction_stats = {}
-            total_finalized = 0
-            total_failed = 0
-            total_adjustments = 0
-
-            for sample in samples:
-                person = sample.person_in_charge or '未分配'
-                direction = sample.transformation_direction or '未知'
-                reminder_status = self._calc_reminder_status(sample, today)
-
-                adjustments = db.query(Adjustment).filter(
-                    Adjustment.sample_id == sample.id
-                ).order_by(Adjustment.adjust_date, Adjustment.id).all()
-                adj_count = len(adjustments)
-                has_failure = any(adj.result_evaluation == '失败' for adj in adjustments)
-                is_finalized = sample.status in ('版型定稿', '已完成')
-
-                if person not in person_stats:
-                    person_stats[person] = {
-                        'total': 0, 'finalized': 0, 'failed': 0, 'adjustments': 0
-                    }
-                person_stats[person]['total'] += 1
-                person_stats[person]['adjustments'] += adj_count
-                if is_finalized:
-                    person_stats[person]['finalized'] += 1
-                if has_failure:
-                    person_stats[person]['failed'] += 1
-
-                if direction not in direction_stats:
-                    direction_stats[direction] = {
-                        'total': 0, 'finalized': 0, 'failed': 0, 'adjustments': 0
-                    }
-                direction_stats[direction]['total'] += 1
-                direction_stats[direction]['adjustments'] += adj_count
-                if is_finalized:
-                    direction_stats[direction]['finalized'] += 1
-                if has_failure:
-                    direction_stats[direction]['failed'] += 1
-
-                total_adjustments += adj_count
-                if is_finalized:
-                    total_finalized += 1
-                if has_failure:
-                    total_failed += 1
-
-                sample_data.append({
-                    '试样编号': sample.sample_no,
-                    '原衣类型': sample.original_type,
-                    '改造方向': sample.transformation_direction,
-                    '打样日期': sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else '',
-                    '预计完成日期': sample.expected_completion_date.strftime('%Y-%m-%d') if sample.expected_completion_date else '',
-                    '提醒状态': reminder_status,
-                    '负责人': sample.person_in_charge or '',
-                    '试样状态': sample.status,
-                    '调整次数': adj_count,
-                    '最终采用结果': sample.final_result or ''
-                })
-
-                for i, adj in enumerate(adjustments, 1):
-                    trace_data.append({
-                        '试样编号': sample.sample_no,
-                        '版本序号': i,
-                        '调整日期': adj.adjust_date.strftime('%Y-%m-%d') if adj.adjust_date else '',
-                        '调整部位': adj.adjust_part,
-                        '调整方式': adj.adjust_method,
-                        '结果评价': adj.result_evaluation,
-                        '失败原因': adj.failure_reason or '',
-                        '备注': adj.remark or ''
-                    })
-
-                milestones = db.query(Milestone).filter(
-                    Milestone.sample_id == sample.id
-                ).order_by(Milestone.sort_order, Milestone.id).all()
-
-                for i, ms in enumerate(milestones, 1):
-                    milestone_data.append({
-                        '试样编号': sample.sample_no,
-                        '节点序号': i,
-                        '节点名称': ms.name,
-                        '目标日期': ms.target_date.strftime('%Y-%m-%d') if ms.target_date else '',
-                        '实际完成日期': ms.actual_date.strftime('%Y-%m-%d') if ms.actual_date else '',
-                        '节点状态': ms.status,
-                        '节点说明': ms.description or ''
-                    })
-
-            for person, stats in sorted(person_stats.items()):
-                total = stats['total']
-                person_stats_data.append({
-                    '负责人': person,
-                    '试样总数': total,
-                    '定稿数': stats['finalized'],
-                    '定稿率': f"{stats['finalized'] / total * 100:.1f}%" if total > 0 else '0%',
-                    '失败数': stats['failed'],
-                    '失败率': f"{stats['failed'] / total * 100:.1f}%" if total > 0 else '0%',
-                    '总调整次数': stats['adjustments'],
-                    '平均调整次数': f"{stats['adjustments'] / total:.1f}" if total > 0 else '0'
-                })
-
-            for direction, stats in sorted(direction_stats.items()):
-                total = stats['total']
-                direction_stats_data.append({
-                    '改造方向': direction,
-                    '试样总数': total,
-                    '定稿数': stats['finalized'],
-                    '定稿率': f"{stats['finalized'] / total * 100:.1f}%" if total > 0 else '0%',
-                    '失败数': stats['failed'],
-                    '失败率': f"{stats['failed'] / total * 100:.1f}%" if total > 0 else '0%',
-                    '总调整次数': stats['adjustments'],
-                    '平均调整次数': f"{stats['adjustments'] / total:.1f}" if total > 0 else '0'
-                })
-
-            total = len(samples)
-            summary_data = [{
-                '试样总数': total,
-                '定稿数': total_finalized,
-                '定稿率': f'{total_finalized / total * 100:.1f}%' if total > 0 else '0%',
-                '失败数': total_failed,
-                '失败率': f'{total_failed / total * 100:.1f}%' if total > 0 else '0%',
-                '总调整次数': total_adjustments,
-                '平均调整次数': f'{total_adjustments / total:.1f}' if total > 0 else '0'
-            }]
-
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                pd.DataFrame(sample_data).to_excel(writer, sheet_name='筛选试样列表', index=False)
-                pd.DataFrame(trace_data).to_excel(writer, sheet_name='调整轨迹明细', index=False)
-                pd.DataFrame(milestone_data).to_excel(writer, sheet_name='关键节点', index=False)
-                pd.DataFrame(person_stats_data).to_excel(writer, sheet_name='负责人统计', index=False)
-                pd.DataFrame(direction_stats_data).to_excel(writer, sheet_name='改造方向统计', index=False)
-                pd.DataFrame(summary_data).to_excel(writer, sheet_name='总体统计概览', index=False)
-
+            export_review_data_excel(file_path, samples, today, db)
             QMessageBox.information(self, '成功', f'导出成功！\n文件保存在: {file_path}')
         except Exception as e:
             QMessageBox.critical(self, '错误', f'导出失败: {str(e)}')

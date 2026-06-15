@@ -1,5 +1,3 @@
-import os
-import tempfile
 from datetime import date, datetime
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QTableWidget, QTableWidgetItem, QPushButton,
@@ -9,13 +7,16 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QDateEdit, QTextEdit, QDialogButtonBox, QScrollArea)
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QColor, QBrush
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings
-import pandas as pd
 from pyecharts.charts import Pie, Bar, Line
 from pyecharts import options as opts
 from models import Sample, CostRecord, CostWarning
 from database import get_session
+from services.cost_service import (calculate_sample_total_cost, get_cost_by_type, calc_material_efficiency, calc_estimated_profit, calc_labor_hours, check_cost_warnings, get_all_warnings, mark_warning_handled, COST_TYPE_COLORS)
+from services.stats_service import (calc_cost_structure, calc_cost_type_stats, calc_direction_cost_stats, calc_person_cost_stats, calc_monthly_cost_trend)
+from services.export_service import (export_cost_detail_excel, export_cost_stats_excel, export_cost_warning_excel)
+from utils.chart_helper import (create_web_view, load_chart, get_empty_html, cleanup_temp_files)
+from utils.table_helper import (get_selected_id, create_colored_item, COST_TYPE_COLORS as TABLE_COST_TYPE_COLORS, truncate_text)
+from utils.filter_helper import (apply_sample_filters, load_sample_filter_options)
 
 
 class CostRecordDialog(QDialog):
@@ -209,9 +210,9 @@ class CostRecordDialog(QDialog):
             QMessageBox.warning(self, '提示', '请输入单位')
             return
 
-        db = get_session()
         try:
             if self.cost_record:
+                db = get_session()
                 cr = db.query(CostRecord).filter(CostRecord.id == self.cost_record.id).first()
                 if cr:
                     cr.cost_type = cost_type
@@ -233,6 +234,8 @@ class CostRecordDialog(QDialog):
 
                     cr.subtotal = self.subtotal_spin.value()
                     cr.remark = self.remark_edit.toPlainText().strip()
+                    db.commit()
+                db.close()
             else:
                 if cost_type == '人工成本':
                     cr = CostRecord(
@@ -257,15 +260,13 @@ class CostRecordDialog(QDialog):
                         subtotal=self.subtotal_spin.value(),
                         remark=self.remark_edit.toPlainText().strip()
                     )
+                db = get_session()
                 db.add(cr)
-
-            db.commit()
+                db.commit()
+                db.close()
             self.accept()
         except Exception as e:
-            db.rollback()
             QMessageBox.critical(self, '错误', f'保存失败: {str(e)}')
-        finally:
-            db.close()
 
 
 class CostCenterDialog(QDialog):
@@ -278,15 +279,6 @@ class CostCenterDialog(QDialog):
         self._load_filter_options()
         self._load_cost_data()
         self._check_cost_warnings()
-
-    def _create_web_view(self):
-        view = QWebEngineView()
-        settings = view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
-        return view
 
     def _init_ui(self):
         main_layout = QVBoxLayout()
@@ -485,13 +477,13 @@ class CostCenterDialog(QDialog):
 
         left_group = QGroupBox('成本结构占比')
         left_layout = QVBoxLayout()
-        self.structure_view = self._create_web_view()
+        self.structure_view = create_web_view()
         left_layout.addWidget(self.structure_view)
         left_group.setLayout(left_layout)
 
         right_group = QGroupBox('各类型成本对比')
         right_layout = QVBoxLayout()
-        self.type_compare_view = self._create_web_view()
+        self.type_compare_view = create_web_view()
         right_layout.addWidget(self.type_compare_view)
         right_group.setLayout(right_layout)
 
@@ -565,7 +557,7 @@ class CostCenterDialog(QDialog):
 
         chart_group = QGroupBox('成本趋势')
         chart_layout = QVBoxLayout()
-        self.trend_view = self._create_web_view()
+        self.trend_view = create_web_view()
         chart_layout.addWidget(self.trend_view)
         chart_group.setLayout(chart_layout)
 
@@ -644,25 +636,7 @@ class CostCenterDialog(QDialog):
     def _load_filter_options(self):
         db = get_session()
         try:
-            self.type_filter.addItem('全部')
-            types = db.query(Sample.original_type).distinct().all()
-            for (t,) in types:
-                if t:
-                    self.type_filter.addItem(t)
-
-            self.direction_filter.addItem('全部')
-            directions = db.query(Sample.transformation_direction).distinct().all()
-            for (d,) in directions:
-                if d:
-                    self.direction_filter.addItem(d)
-
-            self.person_filter.addItem('全部')
-            persons = db.query(Sample.person_in_charge).filter(
-                Sample.person_in_charge.isnot(None)
-            ).distinct().all()
-            for (p,) in persons:
-                if p:
-                    self.person_filter.addItem(p)
+            load_sample_filter_options(db, self.type_filter, self.direction_filter, self.person_filter)
         finally:
             db.close()
 
@@ -670,58 +644,17 @@ class CostCenterDialog(QDialog):
         db = get_session()
         try:
             query = db.query(Sample)
-
-            orig_type = self.type_filter.currentText()
-            if orig_type != '全部':
-                query = query.filter(Sample.original_type == orig_type)
-
-            direction = self.direction_filter.currentText()
-            if direction != '全部':
-                query = query.filter(Sample.transformation_direction == direction)
-
-            person = self.person_filter.currentText()
-            if person != '全部':
-                query = query.filter(Sample.person_in_charge == person)
-
-            start_date = self.start_date.date().toPyDate()
-            end_date = self.end_date.date().toPyDate()
-            if start_date:
-                query = query.filter(Sample.sample_date >= start_date)
-            if end_date:
-                query = query.filter(Sample.sample_date <= end_date)
-
-            samples = query.order_by(Sample.sample_date.desc(), Sample.id.desc()).all()
-            return samples
+            query = apply_sample_filters(
+                query,
+                type_text=self.type_filter.currentText(),
+                direction=self.direction_filter.currentText(),
+                person=self.person_filter.currentText(),
+                start_date=self.start_date.date().toPyDate(),
+                end_date=self.end_date.date().toPyDate()
+            )
+            return query.order_by(Sample.sample_date.desc(), Sample.id.desc()).all()
         finally:
             db.close()
-
-    def _calculate_sample_total_cost(self, sample_id, db=None):
-        close_db = False
-        if db is None:
-            db = get_session()
-            close_db = True
-        try:
-            records = db.query(CostRecord).filter(CostRecord.sample_id == sample_id).all()
-            total = sum(r.subtotal or 0 for r in records)
-            return total
-        finally:
-            if close_db:
-                db.close()
-
-    def _get_cost_by_type(self, sample_id, db=None):
-        close_db = False
-        if db is None:
-            db = get_session()
-            close_db = True
-        try:
-            records = db.query(CostRecord).filter(CostRecord.sample_id == sample_id).all()
-            cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
-            for r in records:
-                cost_by_type[r.cost_type] += r.subtotal or 0
-            return cost_by_type
-        finally:
-            if close_db:
-                db.close()
 
     def _load_cost_data(self):
         samples = self._get_filtered_samples()
@@ -729,7 +662,7 @@ class CostCenterDialog(QDialog):
         try:
             self.sample_table.setRowCount(len(samples))
             for row, sample in enumerate(samples):
-                total_cost = self._calculate_sample_total_cost(sample.id, db)
+                total_cost = calculate_sample_total_cost(sample.id, db)
 
                 has_warning = db.query(CostWarning).filter(
                     CostWarning.sample_id == sample.id,
@@ -765,16 +698,10 @@ class CostCenterDialog(QDialog):
             db.close()
 
     def _load_structure_charts(self, samples, db):
-        cost_by_type = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
-        type_record_count = {'旧衣主料': 0, '辅料': 0, '配件': 0, '人工成本': 0}
-        type_sample_count = {'旧衣主料': set(), '辅料': set(), '配件': set(), '人工成本': set()}
-
-        for sample in samples:
-            records = db.query(CostRecord).filter(CostRecord.sample_id == sample.id).all()
-            for r in records:
-                cost_by_type[r.cost_type] += r.subtotal or 0
-                type_record_count[r.cost_type] += 1
-                type_sample_count[r.cost_type].add(sample.id)
+        structure = calc_cost_structure(samples, db)
+        cost_by_type = structure['cost_by_type']
+        type_record_count = structure['type_record_count']
+        type_sample_count = structure['type_sample_count']
 
         total_cost = sum(cost_by_type.values())
 
@@ -790,12 +717,9 @@ class CostCenterDialog(QDialog):
                 .set_global_opts(title_opts=opts.TitleOpts(title='成本结构占比'))
                 .set_series_opts(label_opts=opts.LabelOpts(formatter='{b}: ¥{c} ({d}%)'))
             )
-            self._load_chart(self.structure_view, pie)
+            load_chart(self.structure_view, pie, self._temp_files)
         else:
-            self.structure_view.setHtml(
-                '<html><body style="display:flex;justify-content:center;align-items:center;height:100vh;">'
-                '<p style="font-size:18px;color:#999;">暂无成本数据</p></body></html>'
-            )
+            self.structure_view.setHtml(get_empty_html('暂无成本数据'))
 
         type_names = list(cost_by_type.keys())
         type_costs = [c / 100 for c in cost_by_type.values()]
@@ -809,7 +733,7 @@ class CostCenterDialog(QDialog):
                 yaxis_opts=opts.AxisOpts(name='金额(元)')
             )
         )
-        self._load_chart(self.type_compare_view, bar)
+        load_chart(self.type_compare_view, bar, self._temp_files)
 
         self.structure_table.setRowCount(4)
         for row, (ctype, cost) in enumerate(cost_by_type.items()):
@@ -834,49 +758,17 @@ class CostCenterDialog(QDialog):
         self.structure_table.resizeColumnsToContents()
 
     def _load_stats_data(self, samples, db):
-        type_stats = {}
-        direction_stats = {}
-        person_stats = {}
+        type_stats = calc_cost_type_stats(samples, db)
+        direction_stats = calc_direction_cost_stats(samples, db)
+        person_stats = calc_person_cost_stats(samples, db)
+        monthly_costs = calc_monthly_cost_trend(samples, db)
+
         total_cost_all = 0
         total_profit_all = 0
-        monthly_costs = {}
-
         for sample in samples:
-            total_cost = self._calculate_sample_total_cost(sample.id, db)
+            total_cost = calculate_sample_total_cost(sample.id, db)
             total_cost_all += total_cost
-
-            cost_by_type = self._get_cost_by_type(sample.id, db)
-            material_efficiency = self._calc_material_efficiency(cost_by_type)
-            estimated_profit = self._calc_estimated_profit(total_cost, sample)
-            total_profit_all += estimated_profit
-
-            if sample.sample_date:
-                month_key = sample.sample_date.strftime('%Y-%m')
-                monthly_costs[month_key] = monthly_costs.get(month_key, 0) + total_cost
-
-            otype = sample.original_type or '未知'
-            if otype not in type_stats:
-                type_stats[otype] = {'count': 0, 'total_cost': 0, 'total_efficiency': 0, 'total_profit': 0}
-            type_stats[otype]['count'] += 1
-            type_stats[otype]['total_cost'] += total_cost
-            type_stats[otype]['total_efficiency'] += material_efficiency
-            type_stats[otype]['total_profit'] += estimated_profit
-
-            direction = sample.transformation_direction or '未知'
-            if direction not in direction_stats:
-                direction_stats[direction] = {'count': 0, 'total_cost': 0, 'total_efficiency': 0, 'total_profit': 0}
-            direction_stats[direction]['count'] += 1
-            direction_stats[direction]['total_cost'] += total_cost
-            direction_stats[direction]['total_efficiency'] += material_efficiency
-            direction_stats[direction]['total_profit'] += estimated_profit
-
-            person = sample.person_in_charge or '未分配'
-            labor_hours = self._calc_labor_hours(sample.id, db)
-            if person not in person_stats:
-                person_stats[person] = {'count': 0, 'total_cost': 0, 'total_hours': 0}
-            person_stats[person]['count'] += 1
-            person_stats[person]['total_cost'] += total_cost
-            person_stats[person]['total_hours'] += labor_hours
+            total_profit_all += calc_estimated_profit(total_cost, sample)
 
         self._fill_type_stats(type_stats)
         self._fill_direction_stats(direction_stats)
@@ -891,39 +783,6 @@ class CostCenterDialog(QDialog):
         self.stats_avg_label.setText(f'平均成本: ¥{avg_cost:.2f}')
         self.stats_total_cost_label.setText(f'总成本: ¥{total_cost_all/100:.2f}')
         self.stats_avg_profit_label.setText(f'平均预估利润: ¥{avg_profit:.2f}')
-
-    def _calc_material_efficiency(self, cost_by_type):
-        material_cost = cost_by_type['旧衣主料']
-        total_cost = sum(cost_by_type.values())
-        if total_cost == 0:
-            return 0
-        if material_cost == 0:
-            return 100
-        return min(100, (1 - material_cost / total_cost) * 100)
-
-    def _calc_estimated_profit(self, total_cost, sample):
-        expected_price = sample.expected_price or 0
-        if expected_price == 0:
-            base_prices = {
-                '改造成牛仔背包': 20000,
-                '改造成购物袋': 8000,
-                '改造成马甲': 15000,
-                '改造成抱枕套': 6000,
-                '改造成围裙': 5000,
-                '改造成牛仔裙': 18000,
-            }
-            expected_price = base_prices.get(sample.transformation_direction, 10000)
-        return max(0, expected_price - total_cost)
-
-    def _calc_labor_hours(self, sample_id, db):
-        records = db.query(CostRecord).filter(
-            CostRecord.sample_id == sample_id,
-            CostRecord.cost_type == '人工成本'
-        ).all()
-        total_hours = 0
-        for r in records:
-            total_hours += r.labor_hours or 0
-        return total_hours
 
     def _fill_type_stats(self, type_stats):
         self.type_stats_table.setRowCount(len(type_stats))
@@ -1015,10 +874,7 @@ class CostCenterDialog(QDialog):
 
     def _load_trend_chart(self, monthly_costs):
         if not monthly_costs:
-            self.trend_view.setHtml(
-                '<html><body style="display:flex;justify-content:center;align-items:center;height:100vh;">'
-                '<p style="font-size:18px;color:#999;">暂无数据</p></body></html>'
-            )
+            self.trend_view.setHtml(get_empty_html('暂无数据'))
             return
 
         sorted_months = sorted(monthly_costs.keys())
@@ -1033,10 +889,10 @@ class CostCenterDialog(QDialog):
                 yaxis_opts=opts.AxisOpts(name='金额(元)')
             )
         )
-        self._load_chart(self.trend_view, line)
+        load_chart(self.trend_view, line, self._temp_files)
 
     def _load_warnings(self, db):
-        warnings = db.query(CostWarning).order_by(CostWarning.created_at.desc()).all()
+        warnings = get_all_warnings(db)
         self.warning_table.setRowCount(len(warnings))
         for row, w in enumerate(warnings):
             self.warning_table.setItem(row, 0, QTableWidgetItem(str(w.id)))
@@ -1070,34 +926,7 @@ class CostCenterDialog(QDialog):
         samples = self._get_filtered_samples()
         db = get_session()
         try:
-            sample_costs_by_type = {}
-            for sample in samples:
-                total_cost = self._calculate_sample_total_cost(sample.id, db)
-                key = (sample.original_type, sample.transformation_direction)
-                if key not in sample_costs_by_type:
-                    sample_costs_by_type[key] = []
-                sample_costs_by_type[key].append((sample.id, total_cost))
-
-            new_warnings = []
-            for (otype, direction), costs in sample_costs_by_type.items():
-                if len(costs) >= 2:
-                    avg_cost = sum(c for _, c in costs) / len(costs)
-                    for sample_id, total_cost in costs:
-                        if total_cost > avg_cost * 1.2:
-                            existing = db.query(CostWarning).filter(
-                                CostWarning.sample_id == sample_id,
-                                CostWarning.warning_type == '成本过高预警',
-                                CostWarning.is_handled == False
-                            ).first()
-                            if not existing:
-                                new_warnings.append(CostWarning(
-                                    sample_id=sample_id,
-                                    warning_type='成本过高预警',
-                                    warning_message=f'本试样改造成本已超过同类（{otype}→{direction}）平均成本{((total_cost/avg_cost-1)*100):.0f}%',
-                                    total_cost=total_cost,
-                                    average_cost=int(avg_cost)
-                                ))
-
+            new_warnings = check_cost_warnings(samples, db)
             for w in new_warnings:
                 db.add(w)
             db.commit()
@@ -1112,42 +941,19 @@ class CostCenterDialog(QDialog):
         finally:
             db.close()
 
-    def _load_chart(self, web_view, chart):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8')
-        temp_file.close()
-        chart.render(temp_file.name)
-
-        with open(temp_file.name, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-
-        web_view.setHtml(html_content, QUrl('https://assets.pyecharts.org/'))
-        self._temp_files.append(temp_file.name)
-
     def _on_sample_selected(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         self.add_cost_btn.setEnabled(sample_id is not None)
         self._load_cost_records(sample_id)
 
-    def _get_selected_sample_id(self):
-        selected = self.sample_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.sample_table.item(row, 0).text())
+    def _on_cost_selected(self):
+        has_selection = len(self.cost_table.selectedItems()) > 0
+        self.edit_cost_btn.setEnabled(has_selection)
+        self.delete_cost_btn.setEnabled(has_selection)
 
-    def _get_selected_cost_id(self):
-        selected = self.cost_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.cost_table.item(row, 0).text())
-
-    def _get_selected_warning_id(self):
-        selected = self.warning_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.warning_table.item(row, 0).text())
+    def _on_warning_selected(self):
+        has_selection = len(self.warning_table.selectedItems()) > 0
+        self.mark_handled_btn.setEnabled(has_selection)
 
     def _load_cost_records(self, sample_id):
         self.cost_table.setRowCount(0)
@@ -1170,13 +976,7 @@ class CostCenterDialog(QDialog):
                 self.cost_table.setItem(row, 0, QTableWidgetItem(str(record.id)))
 
                 type_item = QTableWidgetItem(record.cost_type)
-                type_colors = {
-                    '旧衣主料': QColor(23, 162, 184),
-                    '辅料': QColor(40, 167, 69),
-                    '配件': QColor(255, 193, 7),
-                    '人工成本': QColor(220, 53, 69)
-                }
-                type_item.setForeground(QBrush(type_colors.get(record.cost_type, QColor(0, 0, 0))))
+                type_item.setForeground(QBrush(TABLE_COST_TYPE_COLORS.get(record.cost_type, QColor(0, 0, 0))))
                 self.cost_table.setItem(row, 1, type_item)
 
                 self.cost_table.setItem(row, 2, QTableWidgetItem(record.item_name))
@@ -1205,17 +1005,8 @@ class CostCenterDialog(QDialog):
         finally:
             db.close()
 
-    def _on_cost_selected(self):
-        has_selection = len(self.cost_table.selectedItems()) > 0
-        self.edit_cost_btn.setEnabled(has_selection)
-        self.delete_cost_btn.setEnabled(has_selection)
-
-    def _on_warning_selected(self):
-        has_selection = len(self.warning_table.selectedItems()) > 0
-        self.mark_handled_btn.setEnabled(has_selection)
-
     def _add_cost_record(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         if not sample_id:
             return
         dialog = CostRecordDialog(self, sample_id=sample_id)
@@ -1225,7 +1016,7 @@ class CostCenterDialog(QDialog):
             self._check_cost_warnings()
 
     def _edit_cost_record(self):
-        cost_id = self._get_selected_cost_id()
+        cost_id = get_selected_id(self.cost_table)
         if not cost_id:
             return
         db = get_session()
@@ -1235,7 +1026,7 @@ class CostCenterDialog(QDialog):
                 return
             dialog = CostRecordDialog(self, cost_record=cost_record)
             if dialog.exec():
-                sample_id = self._get_selected_sample_id()
+                sample_id = get_selected_id(self.sample_table)
                 self._load_cost_records(sample_id)
                 self._load_cost_data()
                 self._check_cost_warnings()
@@ -1243,12 +1034,12 @@ class CostCenterDialog(QDialog):
             db.close()
 
     def _edit_sample_cost(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         if sample_id:
             self.tab_widget.setCurrentIndex(0)
 
     def _delete_cost_record(self):
-        cost_id = self._get_selected_cost_id()
+        cost_id = get_selected_id(self.cost_table)
         if not cost_id:
             return
 
@@ -1265,7 +1056,7 @@ class CostCenterDialog(QDialog):
             if record:
                 db.delete(record)
                 db.commit()
-                sample_id = self._get_selected_sample_id()
+                sample_id = get_selected_id(self.sample_table)
                 self._load_cost_records(sample_id)
                 self._load_cost_data()
                 QMessageBox.information(self, '成功', '删除成功')
@@ -1276,19 +1067,16 @@ class CostCenterDialog(QDialog):
             db.close()
 
     def _mark_warning_handled(self):
-        warning_id = self._get_selected_warning_id()
+        warning_id = get_selected_id(self.warning_table)
         if not warning_id:
             return
 
         db = get_session()
         try:
-            warning = db.query(CostWarning).filter(CostWarning.id == warning_id).first()
-            if warning:
-                warning.is_handled = True
-                db.commit()
-                self._load_warnings(db)
-                self._load_cost_data()
-                QMessageBox.information(self, '成功', '已标记为已处理')
+            mark_warning_handled(warning_id)
+            self._load_warnings(db)
+            self._load_cost_data()
+            QMessageBox.information(self, '成功', '已标记为已处理')
         except Exception as e:
             db.rollback()
             QMessageBox.critical(self, '错误', f'操作失败: {str(e)}')
@@ -1324,202 +1112,32 @@ class CostCenterDialog(QDialog):
         if not file_path:
             return
 
-        db = get_session()
         try:
-            samples = self._get_filtered_samples()
-
             if export_type == 'detail':
-                self._export_detail_excel(samples, db, file_path)
+                samples = self._get_filtered_samples()
+                db = get_session()
+                try:
+                    export_cost_detail_excel(file_path, samples, db)
+                finally:
+                    db.close()
             elif export_type == 'stats':
-                self._export_stats_excel(samples, db, file_path)
+                samples = self._get_filtered_samples()
+                db = get_session()
+                try:
+                    export_cost_stats_excel(file_path, samples, db)
+                finally:
+                    db.close()
             else:
-                self._export_warning_excel(db, file_path)
+                db = get_session()
+                try:
+                    export_cost_warning_excel(file_path, db)
+                finally:
+                    db.close()
 
             QMessageBox.information(self, '成功', f'导出成功！\n文件保存在: {file_path}')
         except Exception as e:
             QMessageBox.critical(self, '错误', f'导出失败: {str(e)}')
-        finally:
-            db.close()
-
-    def _export_detail_excel(self, samples, db, file_path):
-        sample_data = []
-        cost_data = []
-
-        for sample in samples:
-            total_cost = self._calculate_sample_total_cost(sample.id, db)
-            cost_by_type = self._get_cost_by_type(sample.id, db)
-            has_warning = db.query(CostWarning).filter(
-                CostWarning.sample_id == sample.id,
-                CostWarning.is_handled == False
-            ).first() is not None
-
-            sample_data.append({
-                '试样编号': sample.sample_no,
-                '原衣类型': sample.original_type,
-                '改造方向': sample.transformation_direction,
-                '打样日期': sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else '',
-                '负责人': sample.person_in_charge or '',
-                '旧衣主料(元)': cost_by_type['旧衣主料'] / 100,
-                '辅料(元)': cost_by_type['辅料'] / 100,
-                '配件(元)': cost_by_type['配件'] / 100,
-                '人工成本(元)': cost_by_type['人工成本'] / 100,
-                '总成本(元)': total_cost / 100,
-                '预警状态': '有预警' if has_warning else '正常'
-            })
-
-            records = db.query(CostRecord).filter(
-                CostRecord.sample_id == sample.id
-            ).order_by(CostRecord.cost_type, CostRecord.id).all()
-
-            for record in records:
-                cost_data.append({
-                    '试样编号': sample.sample_no,
-                    '成本类型': record.cost_type,
-                    '项目名称': record.item_name,
-                    '规格/说明': record.specification or '',
-                    '用量': record.quantity or '',
-                    '单位': record.unit or '',
-                    '单价(元)': (record.unit_price or 0) / 100,
-                    '单项成本(元)': (record.subtotal or 0) / 100,
-                    '备注': record.remark or ''
-                })
-
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            pd.DataFrame(sample_data).to_excel(writer, sheet_name='试样成本汇总', index=False)
-            pd.DataFrame(cost_data).to_excel(writer, sheet_name='成本明细', index=False)
-
-    def _export_stats_excel(self, samples, db, file_path):
-        type_stats = {}
-        direction_stats = {}
-        person_stats = {}
-        monthly_costs = {}
-
-        for sample in samples:
-            total_cost = self._calculate_sample_total_cost(sample.id, db)
-            cost_by_type = self._get_cost_by_type(sample.id, db)
-            material_efficiency = self._calc_material_efficiency(cost_by_type)
-            estimated_profit = self._calc_estimated_profit(total_cost, sample)
-
-            if sample.sample_date:
-                month_key = sample.sample_date.strftime('%Y-%m')
-                monthly_costs[month_key] = monthly_costs.get(month_key, 0) + total_cost
-
-            otype = sample.original_type or '未知'
-            if otype not in type_stats:
-                type_stats[otype] = {'count': 0, 'total_cost': 0, 'total_efficiency': 0, 'total_profit': 0}
-            type_stats[otype]['count'] += 1
-            type_stats[otype]['total_cost'] += total_cost
-            type_stats[otype]['total_efficiency'] += material_efficiency
-            type_stats[otype]['total_profit'] += estimated_profit
-
-            direction = sample.transformation_direction or '未知'
-            if direction not in direction_stats:
-                direction_stats[direction] = {'count': 0, 'total_cost': 0, 'total_efficiency': 0, 'total_profit': 0}
-            direction_stats[direction]['count'] += 1
-            direction_stats[direction]['total_cost'] += total_cost
-            direction_stats[direction]['total_efficiency'] += material_efficiency
-            direction_stats[direction]['total_profit'] += estimated_profit
-
-            person = sample.person_in_charge or '未分配'
-            labor_hours = self._calc_labor_hours(sample.id, db)
-            if person not in person_stats:
-                person_stats[person] = {'count': 0, 'total_cost': 0, 'total_hours': 0}
-            person_stats[person]['count'] += 1
-            person_stats[person]['total_cost'] += total_cost
-            person_stats[person]['total_hours'] += labor_hours
-
-        type_stats_data = []
-        for otype, stats in sorted(type_stats.items()):
-            count = stats['count']
-            type_stats_data.append({
-                '原衣类型': otype,
-                '试样数': count,
-                '总成本(元)': stats['total_cost'] / 100,
-                '平均成本(元)': stats['total_cost'] / count / 100 if count > 0 else 0,
-                '平均材料利用率(%)': f"{stats['total_efficiency'] / count:.1f}" if count > 0 else '0',
-                '平均预估利润(元)': stats['total_profit'] / count / 100 if count > 0 else 0,
-            })
-
-        direction_stats_data = []
-        for direction, stats in sorted(direction_stats.items()):
-            count = stats['count']
-            direction_stats_data.append({
-                '改造方向': direction,
-                '试样数': count,
-                '总成本(元)': stats['total_cost'] / 100,
-                '平均成本(元)': stats['total_cost'] / count / 100 if count > 0 else 0,
-                '平均材料利用率(%)': f"{stats['total_efficiency'] / count:.1f}" if count > 0 else '0',
-                '平均预估利润(元)': stats['total_profit'] / count / 100 if count > 0 else 0,
-            })
-
-        person_stats_data = []
-        for person, stats in sorted(person_stats.items()):
-            count = stats['count']
-            person_stats_data.append({
-                '负责人': person,
-                '试样数': count,
-                '总成本(元)': stats['total_cost'] / 100,
-                '平均成本(元)': stats['total_cost'] / count / 100 if count > 0 else 0,
-                '总工时(小时)': f"{stats['total_hours']:.1f}",
-                '平均工时(小时)': f"{stats['total_hours'] / count:.1f}" if count > 0 else '0',
-            })
-
-        monthly_data = []
-        for month in sorted(monthly_costs.keys()):
-            monthly_data.append({
-                '月份': month,
-                '总成本(元)': monthly_costs[month] / 100
-            })
-
-        total_samples = len(samples)
-        total_cost_all = sum(self._calculate_sample_total_cost(s.id, db) for s in samples)
-        total_profit_all = sum(
-            self._calc_estimated_profit(
-                self._calculate_sample_total_cost(s.id, db),
-                s.transformation_direction
-            ) for s in samples
-        )
-
-        summary_data = [{
-            '试样总数': total_samples,
-            '总成本(元)': total_cost_all / 100,
-            '平均成本(元)': total_cost_all / total_samples / 100 if total_samples > 0 else 0,
-            '总预估利润(元)': total_profit_all / 100,
-            '平均预估利润(元)': total_profit_all / total_samples / 100 if total_samples > 0 else 0,
-        }]
-
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            pd.DataFrame(summary_data).to_excel(writer, sheet_name='总体统计概览', index=False)
-            pd.DataFrame(type_stats_data).to_excel(writer, sheet_name='按原衣类型统计', index=False)
-            pd.DataFrame(direction_stats_data).to_excel(writer, sheet_name='按改造方向统计', index=False)
-            pd.DataFrame(person_stats_data).to_excel(writer, sheet_name='按负责人统计', index=False)
-            pd.DataFrame(monthly_data).to_excel(writer, sheet_name='月度成本趋势', index=False)
-
-    def _export_warning_excel(self, db, file_path):
-        warnings = db.query(CostWarning).order_by(CostWarning.created_at.desc()).all()
-        warning_data = []
-        for w in warnings:
-            warning_data.append({
-                '预警ID': w.id,
-                '试样编号': w.sample.sample_no,
-                '原衣类型': w.sample.original_type,
-                '改造方向': w.sample.transformation_direction,
-                '预警类型': w.warning_type,
-                '预警信息': w.warning_message,
-                '本次成本(元)': w.total_cost / 100,
-                '同类平均成本(元)': w.average_cost / 100,
-                '超出比例(%)': f"{(w.total_cost / w.average_cost - 1) * 100:.1f}" if w.average_cost > 0 else '0',
-                '状态': '已处理' if w.is_handled else '待处理',
-                '预警时间': w.created_at.strftime('%Y-%m-%d %H:%M:%S') if w.created_at else ''
-            })
-
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            pd.DataFrame(warning_data).to_excel(writer, sheet_name='成本预警记录', index=False)
 
     def closeEvent(self, event):
-        for f in self._temp_files:
-            try:
-                os.unlink(f)
-            except:
-                pass
+        cleanup_temp_files(self._temp_files)
         super().closeEvent(event)

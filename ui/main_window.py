@@ -1,4 +1,3 @@
-import pandas as pd
 from datetime import date, timedelta
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTableWidget, QTableWidgetItem, QPushButton,
@@ -7,8 +6,11 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
-from models import Sample, Adjustment, Milestone
+from models import Sample
 from database import get_session
+from services.sample_service import calc_reminder_status
+from services.export_service import export_samples_to_excel
+from utils.table_helper import get_selected_id, create_colored_item
 from ui.sample_dialog import SampleDialog
 from ui.adjustment_panel import AdjustmentPanel
 from ui.milestone_panel import MilestonePanel
@@ -155,7 +157,7 @@ class MainWindow(QMainWindow):
 
             self.sample_table.setRowCount(len(samples))
             for row, sample in enumerate(samples):
-                reminder_status = self._calc_reminder_status(sample, today)
+                reminder_status = calc_reminder_status(sample, today)
 
                 self.sample_table.setItem(row, 0, QTableWidgetItem(str(sample.id)))
                 self.sample_table.setItem(row, 1, QTableWidgetItem(sample.sample_no))
@@ -169,11 +171,12 @@ class MainWindow(QMainWindow):
                 self.sample_table.setItem(row, 6, QTableWidgetItem(sample.person_in_charge or ''))
                 self.sample_table.setItem(row, 7, QTableWidgetItem(sample.status))
 
-                reminder_item = QTableWidgetItem(reminder_status)
                 if reminder_status == '已超期':
-                    reminder_item.setBackground(QBrush(QColor(255, 100, 100)))
+                    reminder_item = create_colored_item(reminder_status, QColor(255, 100, 100))
                 elif reminder_status == '即将超期':
-                    reminder_item.setBackground(QBrush(QColor(255, 200, 100)))
+                    reminder_item = create_colored_item(reminder_status, QColor(255, 200, 100))
+                else:
+                    reminder_item = QTableWidgetItem(reminder_status)
                 self.sample_table.setItem(row, 8, reminder_item)
 
                 if reminder_status in ('已超期', '即将超期'):
@@ -190,19 +193,6 @@ class MainWindow(QMainWindow):
         finally:
             db.close()
 
-    def _calc_reminder_status(self, sample, today):
-        if sample.status in ('已完成', '已废弃'):
-            return '正常'
-        if not sample.expected_completion_date:
-            return '正常'
-        days_left = (sample.expected_completion_date - today).days
-        if days_left < 0:
-            return '已超期'
-        elif days_left <= 3:
-            return '即将超期'
-        else:
-            return '正常'
-
     def _update_status_bar(self):
         db = get_session()
         try:
@@ -215,7 +205,7 @@ class MainWindow(QMainWindow):
             overdue_count = 0
             soon_count = 0
             for s in all_samples:
-                status = self._calc_reminder_status(s, today)
+                status = calc_reminder_status(s, today)
                 if status == '已超期':
                     overdue_count += 1
                 elif status == '即将超期':
@@ -235,19 +225,12 @@ class MainWindow(QMainWindow):
     def _on_filter(self):
         self._load_samples()
 
-    def _get_selected_sample_id(self):
-        selected = self.sample_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.sample_table.item(row, 0).text())
-
     def _on_sample_selected(self):
         has_selection = len(self.sample_table.selectedItems()) > 0
         self.edit_btn.setEnabled(has_selection)
         self.delete_btn.setEnabled(has_selection)
 
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         self.adjustment_panel.set_sample(sample_id)
         self.milestone_panel.set_sample(sample_id)
 
@@ -257,7 +240,7 @@ class MainWindow(QMainWindow):
             self._load_samples()
 
     def _edit_sample(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         if not sample_id:
             return
         dialog = SampleDialog(self, sample_id=sample_id)
@@ -266,7 +249,7 @@ class MainWindow(QMainWindow):
             self.adjustment_panel.set_sample(sample_id)
 
     def _delete_sample(self):
-        sample_id = self._get_selected_sample_id()
+        sample_id = get_selected_id(self.sample_table)
         if not sample_id:
             return
 
@@ -323,61 +306,7 @@ class MainWindow(QMainWindow):
         try:
             samples = db.query(Sample).order_by(Sample.sample_no).all()
             today = date.today()
-
-            sample_data = []
-            adjustment_data = []
-            milestone_data = []
-
-            for sample in samples:
-                reminder_status = self._calc_reminder_status(sample, today)
-                sample_data.append({
-                    '试样编号': sample.sample_no,
-                    '原衣类型': sample.original_type,
-                    '改造方向': sample.transformation_direction,
-                    '打样日期': sample.sample_date.strftime('%Y-%m-%d') if sample.sample_date else '',
-                    '预计完成日期': sample.expected_completion_date.strftime('%Y-%m-%d') if sample.expected_completion_date else '',
-                    '提醒状态': reminder_status,
-                    '负责人': sample.person_in_charge or '',
-                    '试样状态': sample.status,
-                    '最终采用结果': sample.final_result or ''
-                })
-
-                adjustments = db.query(Adjustment).filter(
-                    Adjustment.sample_id == sample.id
-                ).order_by(Adjustment.adjust_date, Adjustment.id).all()
-
-                for i, adj in enumerate(adjustments, 1):
-                    adjustment_data.append({
-                        '试样编号': sample.sample_no,
-                        '步骤序号': i,
-                        '调整日期': adj.adjust_date.strftime('%Y-%m-%d') if adj.adjust_date else '',
-                        '调整部位': adj.adjust_part,
-                        '调整方式': adj.adjust_method,
-                        '结果评价': adj.result_evaluation,
-                        '失败原因': adj.failure_reason or '',
-                        '备注': adj.remark or ''
-                    })
-
-                milestones = db.query(Milestone).filter(
-                    Milestone.sample_id == sample.id
-                ).order_by(Milestone.sort_order, Milestone.id).all()
-
-                for i, ms in enumerate(milestones, 1):
-                    milestone_data.append({
-                        '试样编号': sample.sample_no,
-                        '节点序号': i,
-                        '节点名称': ms.name,
-                        '目标日期': ms.target_date.strftime('%Y-%m-%d') if ms.target_date else '',
-                        '实际完成日期': ms.actual_date.strftime('%Y-%m-%d') if ms.actual_date else '',
-                        '节点状态': ms.status,
-                        '节点说明': ms.description or ''
-                    })
-
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                pd.DataFrame(sample_data).to_excel(writer, sheet_name='试样列表', index=False)
-                pd.DataFrame(adjustment_data).to_excel(writer, sheet_name='调整记录', index=False)
-                pd.DataFrame(milestone_data).to_excel(writer, sheet_name='关键节点', index=False)
-
+            export_samples_to_excel(file_path, samples, today, db)
             QMessageBox.information(self, '成功', f'导出成功！\n文件保存在: {file_path}')
         except Exception as e:
             QMessageBox.critical(self, '错误', f'导出失败: {str(e)}')

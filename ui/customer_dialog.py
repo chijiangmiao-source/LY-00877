@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 from models import Customer
-from database import get_session
+from services.customer_service import (get_customers, get_customer_by_id, check_customer_no_exists, save_customer, LEVEL_COLORS)
+from utils.table_helper import (get_selected_id, create_colored_item, truncate_text, LEVEL_COLORS as TABLE_LEVEL_COLORS)
 
 
 class CustomerEditDialog(QDialog):
@@ -86,16 +87,17 @@ class CustomerEditDialog(QDialog):
             QMessageBox.warning(self, '提示', '请输入客户名称')
             return
 
-        db = get_session()
         try:
             if self.customer:
-                customer = db.query(Customer).filter(Customer.id == self.customer.id).first()
+                customer = Customer()
+                customer.id = self.customer.id
+                exclude_id = self.customer.id
             else:
-                existing = db.query(Customer).filter(Customer.customer_no == customer_no).first()
-                if existing:
+                if check_customer_no_exists(customer_no):
                     QMessageBox.warning(self, '提示', '该客户编号已存在')
                     return
                 customer = Customer()
+                exclude_id = None
 
             customer.customer_no = customer_no
             customer.name = name
@@ -106,16 +108,10 @@ class CustomerEditDialog(QDialog):
             customer.customer_level = self.customer_level_combo.currentText()
             customer.remark = self.remark_edit.toPlainText().strip() or None
 
-            if not self.customer:
-                db.add(customer)
-
-            db.commit()
+            save_customer(customer, is_new=not self.customer)
             self.accept()
         except Exception as e:
-            db.rollback()
             QMessageBox.critical(self, '错误', f'保存失败: {str(e)}')
-        finally:
-            db.close()
 
 
 class CustomerSelectDialog(QDialog):
@@ -168,44 +164,22 @@ class CustomerSelectDialog(QDialog):
         self.setLayout(layout)
 
     def _load_customers(self, keyword=None):
-        db = get_session()
-        try:
-            query = db.query(Customer)
-            if keyword:
-                keyword = keyword.lower()
-                query = query.filter(
-                    (Customer.customer_no.contains(keyword)) |
-                    (Customer.name.contains(keyword)) |
-                    (Customer.phone.contains(keyword))
-                )
-            customers = query.order_by(Customer.customer_no).all()
+        customers = get_customers(keyword)
 
-            self.table.setRowCount(len(customers))
-            for row, customer in enumerate(customers):
-                self.table.setItem(row, 0, QTableWidgetItem(str(customer.id)))
-                self.table.setItem(row, 1, QTableWidgetItem(customer.customer_no))
-                self.table.setItem(row, 2, QTableWidgetItem(customer.name))
-                self.table.setItem(row, 3, QTableWidgetItem(customer.phone or ''))
+        self.table.setRowCount(len(customers))
+        for row, customer in enumerate(customers):
+            self.table.setItem(row, 0, QTableWidgetItem(str(customer.id)))
+            self.table.setItem(row, 1, QTableWidgetItem(customer.customer_no))
+            self.table.setItem(row, 2, QTableWidgetItem(customer.name))
+            self.table.setItem(row, 3, QTableWidgetItem(customer.phone or ''))
 
-                level_item = QTableWidgetItem(customer.customer_level or '普通')
-                level_colors = {
-                    '钻石': QColor(185, 242, 255),
-                    '金牌': QColor(255, 215, 0),
-                    '银牌': QColor(192, 192, 192),
-                    '普通': QColor(255, 255, 255),
-                }
-                if customer.customer_level in level_colors:
-                    level_item.setBackground(QBrush(level_colors[customer.customer_level]))
-                self.table.setItem(row, 4, level_item)
+            level = customer.customer_level or '普通'
+            bg_color = TABLE_LEVEL_COLORS.get(level)
+            self.table.setItem(row, 4, create_colored_item(level, bg_color=bg_color))
 
-                remark = customer.remark or ''
-                if len(remark) > 30:
-                    remark = remark[:30] + '...'
-                self.table.setItem(row, 5, QTableWidgetItem(remark))
+            self.table.setItem(row, 5, QTableWidgetItem(truncate_text(customer.remark, 30)))
 
-            self.table.resizeColumnsToContents()
-        finally:
-            db.close()
+        self.table.resizeColumnsToContents()
 
     def _on_search(self):
         keyword = self.search_edit.text().strip()
@@ -219,12 +193,8 @@ class CustomerSelectDialog(QDialog):
         row = selected[0].row()
         customer_id = int(self.table.item(row, 0).text())
 
-        db = get_session()
-        try:
-            self.selected_customer = db.query(Customer).filter(Customer.id == customer_id).first()
-            self.accept()
-        finally:
-            db.close()
+        self.selected_customer = get_customer_by_id(customer_id)
+        self.accept()
 
     def _on_new_customer(self):
         dialog = CustomerEditDialog(self)

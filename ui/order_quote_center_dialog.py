@@ -1,5 +1,3 @@
-import os
-import tempfile
 from datetime import date, datetime
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QTableWidget, QTableWidgetItem, QPushButton,
@@ -7,17 +5,22 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QWidget,
                              QHeaderView, QTabWidget, QGroupBox, QFormLayout,
                              QLineEdit, QDateEdit, QTextEdit, QSpinBox,
                              QDoubleSpinBox, QCheckBox)
-from PyQt6.QtCore import Qt, QUrl, QDate
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor, QBrush
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings
 from pyecharts.charts import Pie, Bar, Line
 from pyecharts import options as opts
-from models import Sample, Customer, Quotation, CommunicationRecord, SystemConfig, CostRecord
+from models import Quotation, Customer, CommunicationRecord
 from database import get_session
 from ui.quotation_dialog import QuotationDialog
 from ui.customer_dialog import CustomerEditDialog, CustomerSelectDialog
 from ui.communication_dialog import CommunicationDialog
+from services.quotation_service import (get_filtered_quotations, get_quotation_by_id, delete_quotation, count_quotation_warnings, STATUS_COLORS)
+from services.customer_service import (get_customers, get_customer_by_id, can_delete_customer, delete_customer as delete_customer_svc, get_customer_order_count, get_customer_deal_count, get_customer_detail_text, LEVEL_COLORS)
+from services.stats_service import (calc_quote_statistics, calc_quotation_status_distribution, calc_monthly_quotation_trend, calc_customer_deal_ranking, calc_direction_profit_rates)
+from services.config_service import get_min_profit_rate
+from utils.chart_helper import (create_web_view, load_chart, get_empty_html, cleanup_temp_files)
+from utils.table_helper import (get_selected_id, create_colored_item, truncate_text, LEVEL_COLORS as TABLE_LEVEL_COLORS, QUOTATION_STATUS_COLORS)
+from utils.filter_helper import load_sample_filter_options
 
 
 class OrderQuoteCenterDialog(QDialog):
@@ -26,32 +29,11 @@ class OrderQuoteCenterDialog(QDialog):
         self.setWindowTitle('订单报价与客户协同中心')
         self.resize(1400, 850)
         self._temp_files = []
-        self.min_profit_rate = 20.0
-        self._load_system_config()
+        self.min_profit_rate = get_min_profit_rate()
         self._init_ui()
         self._load_filter_options()
         self._load_all_data()
         self._check_quote_warnings()
-
-    def _load_system_config(self):
-        db = get_session()
-        try:
-            config = db.query(SystemConfig).filter(
-                SystemConfig.config_key == 'min_profit_rate'
-            ).first()
-            if config and config.config_value:
-                self.min_profit_rate = float(config.config_value)
-        finally:
-            db.close()
-
-    def _create_web_view(self):
-        view = QWebEngineView()
-        settings = view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
-        return view
 
     def _init_ui(self):
         main_layout = QVBoxLayout()
@@ -349,13 +331,13 @@ class OrderQuoteCenterDialog(QDialog):
 
         left_group = QGroupBox('报价状态分布')
         left_layout = QVBoxLayout()
-        self.status_view = self._create_web_view()
+        self.status_view = create_web_view()
         left_layout.addWidget(self.status_view)
         left_group.setLayout(left_layout)
 
         right_group = QGroupBox('月度报价趋势')
         right_layout = QVBoxLayout()
-        self.trend_view = self._create_web_view()
+        self.trend_view = create_web_view()
         right_layout.addWidget(self.trend_view)
         right_group.setLayout(right_layout)
 
@@ -367,13 +349,13 @@ class OrderQuoteCenterDialog(QDialog):
 
         customer_group = QGroupBox('客户贡献排名')
         customer_layout = QVBoxLayout()
-        self.customer_rank_view = self._create_web_view()
+        self.customer_rank_view = create_web_view()
         customer_layout.addWidget(self.customer_rank_view)
         customer_group.setLayout(customer_layout)
 
         profit_group = QGroupBox('利润率分析')
         profit_layout = QVBoxLayout()
-        self.profit_view = self._create_web_view()
+        self.profit_view = create_web_view()
         profit_layout.addWidget(self.profit_view)
         profit_group.setLayout(profit_layout)
 
@@ -385,61 +367,27 @@ class OrderQuoteCenterDialog(QDialog):
         return widget
 
     def _load_filter_options(self):
+        self.customer_filter.addItem('全部')
+        customers = get_customers()
+        for c in customers:
+            self.customer_filter.addItem(f'{c.customer_no} - {c.name}', c.id)
+
         db = get_session()
         try:
-            self.customer_filter.addItem('全部')
-            customers = db.query(Customer).order_by(Customer.name).all()
-            for c in customers:
-                self.customer_filter.addItem(f'{c.customer_no} - {c.name}', c.id)
-
-            self.direction_filter.addItem('全部')
-            directions = db.query(Sample.transformation_direction).distinct().all()
-            for (d,) in directions:
-                if d:
-                    self.direction_filter.addItem(d)
-
-            self.person_filter.addItem('全部')
-            persons = db.query(Sample.person_in_charge).filter(
-                Sample.person_in_charge.isnot(None)
-            ).distinct().all()
-            for (p,) in persons:
-                if p:
-                    self.person_filter.addItem(p)
+            load_sample_filter_options(db, QComboBox(), self.direction_filter, self.person_filter)
         finally:
             db.close()
 
-    def _get_filtered_quotations(self):
-        db = get_session()
-        try:
-            query = db.query(Quotation).join(Sample).join(Customer)
-
-            customer_id = self.customer_filter.currentData()
-            if customer_id and customer_id != '全部':
-                query = query.filter(Quotation.customer_id == customer_id)
-
-            direction = self.direction_filter.currentText()
-            if direction != '全部':
-                query = query.filter(Sample.transformation_direction == direction)
-
-            person = self.person_filter.currentText()
-            if person != '全部':
-                query = query.filter(Sample.person_in_charge == person)
-
-            status = self.status_filter.currentText()
-            if status != '全部':
-                query = query.filter(Quotation.status == status)
-
-            start_date = self.start_date.date().toPyDate()
-            end_date = self.end_date.date().toPyDate()
-            if start_date:
-                query = query.filter(Quotation.quotation_date >= start_date)
-            if end_date:
-                query = query.filter(Quotation.quotation_date <= end_date)
-
-            quotations = query.order_by(Quotation.quotation_date.desc(), Quotation.id.desc()).all()
-            return quotations
-        finally:
-            db.close()
+    def _get_filtered_quotations(self, db):
+        return get_filtered_quotations(
+            db,
+            customer_id=self.customer_filter.currentData(),
+            direction=self.direction_filter.currentText(),
+            person=self.person_filter.currentText(),
+            status=self.status_filter.currentText(),
+            start_date=self.start_date.date().toPyDate(),
+            end_date=self.end_date.date().toPyDate()
+        )
 
     def _load_all_data(self):
         self._load_quotations()
@@ -449,134 +397,113 @@ class OrderQuoteCenterDialog(QDialog):
         self._load_stats_charts()
 
     def _load_quotations(self):
-        quotations = self._get_filtered_quotations()
-        self.quotation_table.setRowCount(len(quotations))
-
-        warning_count = 0
-        for row, q in enumerate(quotations):
-            profit_rate = 0
-            if q.total_cost and q.total_cost > 0:
-                profit_rate = ((q.final_price - q.total_cost) / q.total_cost) * 100
-
-            has_warning = False
-            warning_text = ''
-            if q.final_price > 0 and q.final_price < q.total_cost:
-                has_warning = True
-                warning_text = '低于成本'
-                warning_count += 1
-            elif profit_rate < self.min_profit_rate and q.final_price > 0:
-                has_warning = True
-                warning_text = '利润率低'
-                warning_count += 1
-
-            self.quotation_table.setItem(row, 0, QTableWidgetItem(str(q.id)))
-            self.quotation_table.setItem(row, 1, QTableWidgetItem(q.quotation_no))
-            self.quotation_table.setItem(row, 2, QTableWidgetItem(
-                q.sample.sample_no if q.sample else ''
-            ))
-            self.quotation_table.setItem(row, 3, QTableWidgetItem(
-                q.customer.name if q.customer else ''
-            ))
-            self.quotation_table.setItem(row, 4, QTableWidgetItem(
-                q.quotation_date.strftime('%Y-%m-%d') if q.quotation_date else ''
-            ))
-            self.quotation_table.setItem(row, 5, QTableWidgetItem(
-                q.expected_delivery_date.strftime('%Y-%m-%d') if q.expected_delivery_date else ''
-            ))
-            self.quotation_table.setItem(row, 6, QTableWidgetItem(
-                f'{q.total_cost / 100:.2f}' if q.total_cost else '0.00'
-            ))
-            self.quotation_table.setItem(row, 7, QTableWidgetItem(
-                f'{q.suggested_price / 100:.2f}' if q.suggested_price else '0.00'
-            ))
-
-            final_price_item = QTableWidgetItem(
-                f'{q.final_price / 100:.2f}' if q.final_price else '0.00'
-            )
-            if has_warning:
-                final_price_item.setBackground(QBrush(QColor(255, 200, 200)))
-                final_price_item.setForeground(QBrush(QColor(139, 0, 0)))
-            self.quotation_table.setItem(row, 8, final_price_item)
-
-            profit_item = QTableWidgetItem(f'{profit_rate:.2f}')
-            if profit_rate < self.min_profit_rate and q.final_price > 0:
-                profit_item.setBackground(QBrush(QColor(255, 200, 200)))
-                profit_item.setForeground(QBrush(QColor(139, 0, 0)))
-            elif profit_rate >= 50:
-                profit_item.setBackground(QBrush(QColor(200, 255, 200)))
-            self.quotation_table.setItem(row, 9, profit_item)
-
-            status_item = QTableWidgetItem(q.status or '待确认')
-            status_colors = {
-                '待确认': QColor(255, 255, 200),
-                '已确认': QColor(200, 255, 200),
-                '已拒绝': QColor(255, 200, 200),
-                '已成交': QColor(200, 200, 255),
-            }
-            if q.status in status_colors:
-                status_item.setBackground(QBrush(status_colors[q.status]))
-            self.quotation_table.setItem(row, 10, status_item)
-
-            warning_item = QTableWidgetItem(warning_text)
-            if has_warning:
-                warning_item.setBackground(QBrush(QColor(255, 100, 100)))
-                warning_item.setForeground(QBrush(QColor(255, 255, 255)))
-                for col in range(self.quotation_table.columnCount()):
-                    item = self.quotation_table.item(row, col)
-                    if item and col not in (8, 9, 10, 11):
-                        item.setBackground(QBrush(QColor(255, 240, 240)))
-            self.quotation_table.setItem(row, 11, warning_item)
-
-        self.quotation_table.resizeColumnsToContents()
-
-        if warning_count > 0:
-            self.warning_bar.setVisible(True)
-            self.warning_label.setText(f'⚠️ 当前有 {warning_count} 条报价存在异常！')
-        else:
-            self.warning_bar.setVisible(False)
-
-    def _load_customers(self):
         db = get_session()
         try:
-            customers = db.query(Customer).order_by(Customer.customer_no).all()
-            self.customer_table.setRowCount(len(customers))
+            quotations = self._get_filtered_quotations(db).all()
+            self.quotation_table.setRowCount(len(quotations))
 
-            for row, c in enumerate(customers):
-                order_count = db.query(Quotation).filter(
-                    Quotation.customer_id == c.id
-                ).count()
-                deal_count = db.query(Quotation).filter(
-                    Quotation.customer_id == c.id,
-                    Quotation.status == '已成交'
-                ).count()
+            for row, q in enumerate(quotations):
+                profit_rate = 0
+                if q.total_cost and q.total_cost > 0:
+                    profit_rate = ((q.final_price - q.total_cost) / q.total_cost) * 100
 
-                self.customer_table.setItem(row, 0, QTableWidgetItem(str(c.id)))
-                self.customer_table.setItem(row, 1, QTableWidgetItem(c.customer_no))
-                self.customer_table.setItem(row, 2, QTableWidgetItem(c.name))
-                self.customer_table.setItem(row, 3, QTableWidgetItem(c.phone or ''))
+                has_warning = False
+                warning_text = ''
+                if q.final_price > 0 and q.final_price < q.total_cost:
+                    has_warning = True
+                    warning_text = '低于成本'
+                elif profit_rate < self.min_profit_rate and q.final_price > 0:
+                    has_warning = True
+                    warning_text = '利润率低'
 
-                level_item = QTableWidgetItem(c.customer_level or '普通')
-                level_colors = {
-                    '钻石': QColor(185, 242, 255),
-                    '金牌': QColor(255, 215, 0),
-                    '银牌': QColor(192, 192, 192),
-                    '普通': QColor(255, 255, 255),
-                }
-                if c.customer_level in level_colors:
-                    level_item.setBackground(QBrush(level_colors[c.customer_level]))
-                self.customer_table.setItem(row, 4, level_item)
+                self.quotation_table.setItem(row, 0, QTableWidgetItem(str(q.id)))
+                self.quotation_table.setItem(row, 1, QTableWidgetItem(q.quotation_no))
+                self.quotation_table.setItem(row, 2, QTableWidgetItem(
+                    q.sample.sample_no if q.sample else ''
+                ))
+                self.quotation_table.setItem(row, 3, QTableWidgetItem(
+                    q.customer.name if q.customer else ''
+                ))
+                self.quotation_table.setItem(row, 4, QTableWidgetItem(
+                    q.quotation_date.strftime('%Y-%m-%d') if q.quotation_date else ''
+                ))
+                self.quotation_table.setItem(row, 5, QTableWidgetItem(
+                    q.expected_delivery_date.strftime('%Y-%m-%d') if q.expected_delivery_date else ''
+                ))
+                self.quotation_table.setItem(row, 6, QTableWidgetItem(
+                    f'{q.total_cost / 100:.2f}' if q.total_cost else '0.00'
+                ))
+                self.quotation_table.setItem(row, 7, QTableWidgetItem(
+                    f'{q.suggested_price / 100:.2f}' if q.suggested_price else '0.00'
+                ))
 
-                self.customer_table.setItem(row, 5, QTableWidgetItem(str(order_count)))
-                self.customer_table.setItem(row, 6, QTableWidgetItem(str(deal_count)))
+                final_price_item = QTableWidgetItem(
+                    f'{q.final_price / 100:.2f}' if q.final_price else '0.00'
+                )
+                if has_warning:
+                    final_price_item.setBackground(QBrush(QColor(255, 200, 200)))
+                    final_price_item.setForeground(QBrush(QColor(139, 0, 0)))
+                self.quotation_table.setItem(row, 8, final_price_item)
 
-                remark = c.remark or ''
-                if len(remark) > 20:
-                    remark = remark[:20] + '...'
-                self.customer_table.setItem(row, 7, QTableWidgetItem(remark))
+                profit_item = QTableWidgetItem(f'{profit_rate:.2f}')
+                if profit_rate < self.min_profit_rate and q.final_price > 0:
+                    profit_item.setBackground(QBrush(QColor(255, 200, 200)))
+                    profit_item.setForeground(QBrush(QColor(139, 0, 0)))
+                elif profit_rate >= 50:
+                    profit_item.setBackground(QBrush(QColor(200, 255, 200)))
+                self.quotation_table.setItem(row, 9, profit_item)
 
-            self.customer_table.resizeColumnsToContents()
+                status_item = QTableWidgetItem(q.status or '待确认')
+                if q.status in STATUS_COLORS:
+                    status_item.setBackground(QBrush(STATUS_COLORS[q.status]))
+                self.quotation_table.setItem(row, 10, status_item)
+
+                warning_item = QTableWidgetItem(warning_text)
+                if has_warning:
+                    warning_item.setBackground(QBrush(QColor(255, 100, 100)))
+                    warning_item.setForeground(QBrush(QColor(255, 255, 255)))
+                    for col in range(self.quotation_table.columnCount()):
+                        item = self.quotation_table.item(row, col)
+                        if item and col not in (8, 9, 10, 11):
+                            item.setBackground(QBrush(QColor(255, 240, 240)))
+                self.quotation_table.setItem(row, 11, warning_item)
+
+            self.quotation_table.resizeColumnsToContents()
+
+            warning_count = count_quotation_warnings(quotations, self.min_profit_rate)
+            if warning_count > 0:
+                self.warning_bar.setVisible(True)
+                self.warning_label.setText(f'⚠️ 当前有 {warning_count} 条报价存在异常！')
+            else:
+                self.warning_bar.setVisible(False)
         finally:
             db.close()
+
+    def _load_customers(self):
+        customers = get_customers()
+        self.customer_table.setRowCount(len(customers))
+
+        for row, c in enumerate(customers):
+            order_count = get_customer_order_count(c.id)
+            deal_count = get_customer_deal_count(c.id)
+
+            self.customer_table.setItem(row, 0, QTableWidgetItem(str(c.id)))
+            self.customer_table.setItem(row, 1, QTableWidgetItem(c.customer_no))
+            self.customer_table.setItem(row, 2, QTableWidgetItem(c.name))
+            self.customer_table.setItem(row, 3, QTableWidgetItem(c.phone or ''))
+
+            level_item = QTableWidgetItem(c.customer_level or '普通')
+            if c.customer_level in TABLE_LEVEL_COLORS:
+                level_item.setBackground(QBrush(TABLE_LEVEL_COLORS[c.customer_level]))
+            self.customer_table.setItem(row, 4, level_item)
+
+            self.customer_table.setItem(row, 5, QTableWidgetItem(str(order_count)))
+            self.customer_table.setItem(row, 6, QTableWidgetItem(str(deal_count)))
+
+            remark = truncate_text(c.remark or '', 20)
+            self.customer_table.setItem(row, 7, QTableWidgetItem(remark))
+
+        self.customer_table.resizeColumnsToContents()
 
     def _load_communications(self):
         db = get_session()
@@ -601,14 +528,10 @@ class OrderQuoteCenterDialog(QDialog):
                 self.communication_table.setItem(row, 4, QTableWidgetItem(comm.communicate_type or ''))
                 self.communication_table.setItem(row, 5, QTableWidgetItem(comm.operator or ''))
 
-                content = comm.content or ''
-                if len(content) > 30:
-                    content = content[:30] + '...'
+                content = truncate_text(comm.content or '', 30)
                 self.communication_table.setItem(row, 6, QTableWidgetItem(content))
 
-                follow_up = comm.follow_up or ''
-                if len(follow_up) > 20:
-                    follow_up = follow_up[:20] + '...'
+                follow_up = truncate_text(comm.follow_up or '', 20)
                 self.communication_table.setItem(row, 7, QTableWidgetItem(follow_up))
 
                 important_item = QTableWidgetItem('★' if comm.is_important else '')
@@ -630,39 +553,15 @@ class OrderQuoteCenterDialog(QDialog):
     def _update_stats_cards(self):
         db = get_session()
         try:
-            quotations = self._get_filtered_quotations()
+            quotations = self._get_filtered_quotations(db).all()
+            stats = calc_quote_statistics(quotations, db)
 
-            total_quotes = len(quotations)
-            confirmed = sum(1 for q in quotations if q.status in ('已确认', '已成交'))
-            deals = sum(1 for q in quotations if q.status == '已成交')
-
-            pass_rate = (confirmed / total_quotes * 100) if total_quotes > 0 else 0
-            deal_rate = (deals / total_quotes * 100) if total_quotes > 0 else 0
-
-            sample_ids_with_quotes = [q.sample_id for q in quotations if q.sample_id]
-            repair_count = db.query(Sample).filter(
-                Sample.id.in_(sample_ids_with_quotes),
-                Sample.is_repair == True
-            ).count() if sample_ids_with_quotes else 0
-            repair_rate = (repair_count / len(sample_ids_with_quotes) * 100) if sample_ids_with_quotes else 0
-
-            customer_ids = [q.customer_id for q in quotations]
-            unique_customers = set(customer_ids)
-            repeat_customers = sum(1 for cid in unique_customers if customer_ids.count(cid) > 1)
-            repeat_rate = (repeat_customers / len(unique_customers) * 100) if unique_customers else 0
-
-            profit_rates = []
-            for q in quotations:
-                if q.total_cost and q.total_cost > 0 and q.final_price > 0:
-                    profit_rates.append(((q.final_price - q.total_cost) / q.total_cost) * 100)
-            avg_profit_rate = sum(profit_rates) / len(profit_rates) if profit_rates else 0
-
-            self._update_card_value(self.quote_total_card, str(total_quotes))
-            self._update_card_value(self.quote_pass_rate_card, f'{pass_rate:.1f}%')
-            self._update_card_value(self.deal_rate_card, f'{deal_rate:.1f}%')
-            self._update_card_value(self.repair_rate_card, f'{repair_rate:.1f}%')
-            self._update_card_value(self.repeat_rate_card, f'{repeat_rate:.1f}%')
-            self._update_card_value(self.avg_profit_card, f'{avg_profit_rate:.1f}%')
+            self._update_card_value(self.quote_total_card, str(stats['total']))
+            self._update_card_value(self.quote_pass_rate_card, f"{stats['pass_rate']:.1f}%")
+            self._update_card_value(self.deal_rate_card, f"{stats['deal_rate']:.1f}%")
+            self._update_card_value(self.repair_rate_card, f"{stats['repair_rate']:.1f}%")
+            self._update_card_value(self.repeat_rate_card, f"{stats['repeat_rate']:.1f}%")
+            self._update_card_value(self.avg_profit_card, f"{stats['avg_profit_rate']:.1f}%")
         finally:
             db.close()
 
@@ -674,18 +573,18 @@ class OrderQuoteCenterDialog(QDialog):
                 break
 
     def _load_stats_charts(self):
-        quotations = self._get_filtered_quotations()
-        self._render_status_chart(quotations)
-        self._render_trend_chart(quotations)
-        self._render_customer_rank_chart(quotations)
-        self._render_profit_chart(quotations)
+        db = get_session()
+        try:
+            quotations = self._get_filtered_quotations(db).all()
+            self._render_status_chart(quotations)
+            self._render_trend_chart(quotations)
+            self._render_customer_rank_chart(quotations)
+            self._render_profit_chart(quotations)
+        finally:
+            db.close()
 
     def _render_status_chart(self, quotations):
-        status_counts = {}
-        for q in quotations:
-            status = q.status or '待确认'
-            status_counts[status] = status_counts.get(status, 0) + 1
-
+        status_counts = calc_quotation_status_distribution(quotations)
         if status_counts:
             pie = (
                 Pie()
@@ -693,17 +592,12 @@ class OrderQuoteCenterDialog(QDialog):
                 .set_global_opts(title_opts=opts.TitleOpts(title='报价状态分布'))
                 .set_series_opts(label_opts=opts.LabelOpts(formatter='{b}: {c} ({d}%)'))
             )
-            self._load_chart(self.status_view, pie)
+            load_chart(self.status_view, pie, self._temp_files)
         else:
-            self.status_view.setHtml(self._get_empty_html('暂无报价数据'))
+            self.status_view.setHtml(get_empty_html('暂无报价数据'))
 
     def _render_trend_chart(self, quotations):
-        monthly_data = {}
-        for q in quotations:
-            if q.quotation_date:
-                month_key = q.quotation_date.strftime('%Y-%m')
-                monthly_data[month_key] = monthly_data.get(month_key, 0) + 1
-
+        monthly_data = calc_monthly_quotation_trend(quotations)
         if monthly_data:
             sorted_months = sorted(monthly_data.keys())
             counts = [monthly_data[m] for m in sorted_months]
@@ -714,19 +608,13 @@ class OrderQuoteCenterDialog(QDialog):
                 .add_yaxis('报价数量', counts, is_smooth=True)
                 .set_global_opts(title_opts=opts.TitleOpts(title='月度报价趋势'))
             )
-            self._load_chart(self.trend_view, line)
+            load_chart(self.trend_view, line, self._temp_files)
         else:
-            self.trend_view.setHtml(self._get_empty_html('暂无数据'))
+            self.trend_view.setHtml(get_empty_html('暂无数据'))
 
     def _render_customer_rank_chart(self, quotations):
-        customer_deals = {}
-        for q in quotations:
-            if q.customer and q.status == '已成交':
-                name = q.customer.name
-                customer_deals[name] = customer_deals.get(name, 0) + (q.final_price or 0)
-
-        if customer_deals:
-            sorted_customers = sorted(customer_deals.items(), key=lambda x: x[1], reverse=True)[:10]
+        sorted_customers = calc_customer_deal_ranking(quotations)
+        if sorted_customers:
             names = [c[0] for c in sorted_customers]
             amounts = [c[1] / 100 for c in sorted_customers]
 
@@ -739,21 +627,12 @@ class OrderQuoteCenterDialog(QDialog):
                     xaxis_opts=opts.AxisOpts(axislabel_opts=opts.LabelOpts(rotate=-30))
                 )
             )
-            self._load_chart(self.customer_rank_view, bar)
+            load_chart(self.customer_rank_view, bar, self._temp_files)
         else:
-            self.customer_rank_view.setHtml(self._get_empty_html('暂无成交数据'))
+            self.customer_rank_view.setHtml(get_empty_html('暂无成交数据'))
 
     def _render_profit_chart(self, quotations):
-        profit_data = {}
-        for q in quotations:
-            if q.sample:
-                direction = q.sample.transformation_direction or '未知'
-                if q.total_cost and q.total_cost > 0 and q.final_price > 0:
-                    rate = ((q.final_price - q.total_cost) / q.total_cost) * 100
-                    if direction not in profit_data:
-                        profit_data[direction] = []
-                    profit_data[direction].append(rate)
-
+        profit_data = calc_direction_profit_rates(quotations)
         if profit_data:
             directions = list(profit_data.keys())
             avg_rates = [sum(rates) / len(rates) for rates in profit_data.values()]
@@ -767,43 +646,23 @@ class OrderQuoteCenterDialog(QDialog):
                     xaxis_opts=opts.AxisOpts(axislabel_opts=opts.LabelOpts(rotate=-30))
                 )
             )
-            self._load_chart(self.profit_view, bar)
+            load_chart(self.profit_view, bar, self._temp_files)
         else:
-            self.profit_view.setHtml(self._get_empty_html('暂无利润数据'))
-
-    def _get_empty_html(self, message):
-        return f'''
-        <html><body style="display:flex;justify-content:center;align-items:center;height:100vh;">
-        <p style="font-size:18px;color:#999;">{message}</p></body></html>
-        '''
-
-    def _load_chart(self, web_view, chart):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8')
-        temp_file.close()
-        chart.render(temp_file.name)
-
-        with open(temp_file.name, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-
-        web_view.setHtml(html_content, QUrl('https://assets.pyecharts.org/'))
-        self._temp_files.append(temp_file.name)
+            self.profit_view.setHtml(get_empty_html('暂无利润数据'))
 
     def _check_quote_warnings(self):
-        quotations = self._get_filtered_quotations()
-        warning_count = 0
-        for q in quotations:
-            if q.final_price > 0 and q.final_price < q.total_cost:
-                warning_count += 1
-            elif q.total_cost and q.total_cost > 0 and q.final_price > 0:
-                profit_rate = ((q.final_price - q.total_cost) / q.total_cost) * 100
-                if profit_rate < self.min_profit_rate:
-                    warning_count += 1
+        db = get_session()
+        try:
+            quotations = self._get_filtered_quotations(db).all()
+            warning_count = count_quotation_warnings(quotations, self.min_profit_rate)
 
-        if warning_count > 0:
-            self.warning_bar.setVisible(True)
-            self.warning_label.setText(f'⚠️ 当前有 {warning_count} 条报价存在异常！')
-        else:
-            self.warning_bar.setVisible(False)
+            if warning_count > 0:
+                self.warning_bar.setVisible(True)
+                self.warning_label.setText(f'⚠️ 当前有 {warning_count} 条报价存在异常！')
+            else:
+                self.warning_bar.setVisible(False)
+        finally:
+            db.close()
 
     def _on_search(self):
         self._load_all_data()
@@ -819,27 +678,6 @@ class OrderQuoteCenterDialog(QDialog):
         self._load_all_data()
         self._check_quote_warnings()
 
-    def _get_selected_quotation_id(self):
-        selected = self.quotation_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.quotation_table.item(row, 0).text())
-
-    def _get_selected_customer_id(self):
-        selected = self.customer_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.customer_table.item(row, 0).text())
-
-    def _get_selected_communication_id(self):
-        selected = self.communication_table.selectedItems()
-        if not selected:
-            return None
-        row = selected[0].row()
-        return int(self.communication_table.item(row, 0).text())
-
     def _on_quotation_selected(self):
         has_selection = len(self.quotation_table.selectedItems()) > 0
         self.edit_quote_btn.setEnabled(has_selection)
@@ -851,7 +689,7 @@ class OrderQuoteCenterDialog(QDialog):
         self.delete_customer_btn.setEnabled(has_selection)
 
         if has_selection:
-            customer_id = self._get_selected_customer_id()
+            customer_id = get_selected_id(self.customer_table)
             self._show_customer_detail(customer_id)
 
     def _on_communication_selected(self):
@@ -860,50 +698,9 @@ class OrderQuoteCenterDialog(QDialog):
         self.delete_comm_btn.setEnabled(has_selection)
 
     def _show_customer_detail(self, customer_id):
-        db = get_session()
-        try:
-            customer = db.query(Customer).filter(Customer.id == customer_id).first()
-            if not customer:
-                return
-
-            quotations = db.query(Quotation).filter(
-                Quotation.customer_id == customer_id
-            ).order_by(Quotation.quotation_date.desc()).all()
-
-            comms = db.query(CommunicationRecord).filter(
-                CommunicationRecord.customer_id == customer_id
-            ).order_by(CommunicationRecord.communicate_date.desc()).all()
-
-            detail = f'【客户信息】\n'
-            detail += f'客户编号: {customer.customer_no}\n'
-            detail += f'客户名称: {customer.name}\n'
-            detail += f'联系电话: {customer.phone or "无"}\n'
-            detail += f'邮箱: {customer.email or "无"}\n'
-            detail += f'地址: {customer.address or "无"}\n'
-            detail += f'联系人: {customer.contact_person or "无"}\n'
-            detail += f'客户等级: {customer.customer_level or "普通"}\n'
-            detail += f'备注: {customer.remark or "无"}\n\n'
-
-            detail += f'【报价记录】共 {len(quotations)} 条\n'
-            for q in quotations[:5]:
-                date_str = q.quotation_date.strftime('%Y-%m-%d') if q.quotation_date else '未知'
-                price = f'{q.final_price / 100:.2f}' if q.final_price else '0.00'
-                detail += f'  {date_str} - {q.quotation_no} - ¥{price} - {q.status}\n'
-            if len(quotations) > 5:
-                detail += f'  ... 还有 {len(quotations) - 5} 条记录\n'
-            detail += '\n'
-
-            detail += f'【沟通记录】共 {len(comms)} 条\n'
-            for c in comms[:5]:
-                date_str = c.communicate_date.strftime('%Y-%m-%d %H:%M') if c.communicate_date else '未知'
-                content = c.content[:30] + '...' if len(c.content) > 30 else c.content
-                detail += f'  {date_str} - {c.communicate_type} - {content}\n'
-            if len(comms) > 5:
-                detail += f'  ... 还有 {len(comms) - 5} 条记录\n'
-
+        detail = get_customer_detail_text(customer_id)
+        if detail:
             self.customer_detail.setPlainText(detail)
-        finally:
-            db.close()
 
     def _add_quotation(self):
         dialog = QuotationDialog(self)
@@ -912,7 +709,7 @@ class OrderQuoteCenterDialog(QDialog):
             self._check_quote_warnings()
 
     def _edit_quotation(self):
-        quotation_id = self._get_selected_quotation_id()
+        quotation_id = get_selected_id(self.quotation_table)
         if not quotation_id:
             return
         db = get_session()
@@ -927,7 +724,7 @@ class OrderQuoteCenterDialog(QDialog):
             db.close()
 
     def _delete_quotation(self):
-        quotation_id = self._get_selected_quotation_id()
+        quotation_id = get_selected_id(self.quotation_table)
         if not quotation_id:
             return
 
@@ -938,20 +735,13 @@ class OrderQuoteCenterDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        db = get_session()
         try:
-            quotation = db.query(Quotation).filter(Quotation.id == quotation_id).first()
-            if quotation:
-                db.delete(quotation)
-                db.commit()
-                self._load_all_data()
-                self._check_quote_warnings()
-                QMessageBox.information(self, '成功', '删除成功')
+            delete_quotation(quotation_id)
+            self._load_all_data()
+            self._check_quote_warnings()
+            QMessageBox.information(self, '成功', '删除成功')
         except Exception as e:
-            db.rollback()
             QMessageBox.critical(self, '错误', f'删除失败: {str(e)}')
-        finally:
-            db.close()
 
     def _add_customer(self):
         dialog = CustomerEditDialog(self)
@@ -960,7 +750,7 @@ class OrderQuoteCenterDialog(QDialog):
             self._load_filter_options()
 
     def _edit_customer(self):
-        customer_id = self._get_selected_customer_id()
+        customer_id = get_selected_id(self.customer_table)
         if not customer_id:
             return
         db = get_session()
@@ -975,41 +765,32 @@ class OrderQuoteCenterDialog(QDialog):
             db.close()
 
     def _delete_customer(self):
-        customer_id = self._get_selected_customer_id()
+        customer_id = get_selected_id(self.customer_table)
         if not customer_id:
             return
 
-        db = get_session()
-        try:
-            quote_count = db.query(Quotation).filter(
-                Quotation.customer_id == customer_id
-            ).count()
-            if quote_count > 0:
-                QMessageBox.warning(
-                    self, '无法删除',
-                    f'该客户下有 {quote_count} 条报价记录，无法删除！'
-                )
-                return
-
-            reply = QMessageBox.question(
-                self, '确认删除', '确定要删除该客户吗？此操作不可恢复！',
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        can_delete, quote_count = can_delete_customer(customer_id)
+        if not can_delete:
+            QMessageBox.warning(
+                self, '无法删除',
+                f'该客户下有 {quote_count} 条报价记录，无法删除！'
             )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+            return
 
-            customer = db.query(Customer).filter(Customer.id == customer_id).first()
-            if customer:
-                db.delete(customer)
-                db.commit()
-                self._load_customers()
-                self._load_filter_options()
-                QMessageBox.information(self, '成功', '删除成功')
+        reply = QMessageBox.question(
+            self, '确认删除', '确定要删除该客户吗？此操作不可恢复！',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            delete_customer_svc(customer_id)
+            self._load_customers()
+            self._load_filter_options()
+            QMessageBox.information(self, '成功', '删除成功')
         except Exception as e:
-            db.rollback()
             QMessageBox.critical(self, '错误', f'删除失败: {str(e)}')
-        finally:
-            db.close()
 
     def _add_communication(self):
         dialog = CommunicationDialog(self)
@@ -1017,7 +798,7 @@ class OrderQuoteCenterDialog(QDialog):
             self._load_communications()
 
     def _edit_communication(self):
-        comm_id = self._get_selected_communication_id()
+        comm_id = get_selected_id(self.communication_table)
         if not comm_id:
             return
         db = get_session()
@@ -1031,7 +812,7 @@ class OrderQuoteCenterDialog(QDialog):
             db.close()
 
     def _delete_communication(self):
-        comm_id = self._get_selected_communication_id()
+        comm_id = get_selected_id(self.communication_table)
         if not comm_id:
             return
 
@@ -1057,9 +838,5 @@ class OrderQuoteCenterDialog(QDialog):
             db.close()
 
     def closeEvent(self, event):
-        for f in self._temp_files:
-            try:
-                os.unlink(f)
-            except:
-                pass
+        cleanup_temp_files(self._temp_files)
         super().closeEvent(event)

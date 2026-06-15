@@ -6,9 +6,14 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                              QDateEdit)
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtGui import QColor, QBrush, QFont
-from models import Quotation, Sample, Customer, CostRecord, SystemConfig
+from models import Quotation, Sample, Customer
 from database import get_session
 from ui.customer_dialog import CustomerSelectDialog
+from services.config_service import get_min_profit_rate, get_default_profit_rate
+from services.cost_service import load_cost_from_records
+from services.quotation_service import (generate_quotation_no, check_quotation_no_exists,
+                                        calc_suggested_price, calc_profit_rate,
+                                        check_quotation_warnings)
 
 
 class QuotationDialog(QDialog):
@@ -17,31 +22,13 @@ class QuotationDialog(QDialog):
         self.quotation = quotation
         self.sample_id = sample_id
         self.customer_id = customer_id
-        self.min_profit_rate = 20.0
-        self._get_system_config()
+        self.min_profit_rate = get_min_profit_rate()
+        self.default_profit_rate = get_default_profit_rate()
         self.setWindowTitle('编辑报价单' if quotation else '新增报价单')
         self.resize(650, 750)
         self._init_ui()
         self._connect_signals()
         self._load_data()
-
-    def _get_system_config(self):
-        db = get_session()
-        try:
-            config = db.query(SystemConfig).filter(
-                SystemConfig.config_key == 'min_profit_rate'
-            ).first()
-            if config and config.config_value:
-                self.min_profit_rate = float(config.config_value)
-            default_config = db.query(SystemConfig).filter(
-                SystemConfig.config_key == 'default_profit_rate'
-            ).first()
-            if default_config and default_config.config_value:
-                self.default_profit_rate = float(default_config.config_value)
-            else:
-                self.default_profit_rate = 30.0
-        finally:
-            db.close()
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -223,26 +210,10 @@ class QuotationDialog(QDialog):
 
         db = get_session()
         try:
-            records = db.query(CostRecord).filter(
-                CostRecord.sample_id == self.sample_id
-            ).all()
-
-            material_cost = 0
-            labor_cost = 0
-            other_cost = 0
-
-            for r in records:
-                if r.cost_type in ('旧衣主料', '辅料', '配件'):
-                    material_cost += r.subtotal or 0
-                elif r.cost_type == '人工成本':
-                    labor_cost += r.subtotal or 0
-                else:
-                    other_cost += r.subtotal or 0
-
-            self.material_cost_spin.setValue(material_cost // 100)
-            self.labor_cost_spin.setValue(labor_cost // 100)
-            self.other_cost_spin.setValue(other_cost // 100)
-
+            costs = load_cost_from_records(self.sample_id, db)
+            self.material_cost_spin.setValue(costs['material_cost'] // 100)
+            self.labor_cost_spin.setValue(costs['labor_cost'] // 100)
+            self.other_cost_spin.setValue(costs['other_cost'] // 100)
             QMessageBox.information(self, '成功', '成本数据已自动加载')
         except Exception as e:
             QMessageBox.critical(self, '错误', f'加载成本数据失败: {str(e)}')
@@ -257,7 +228,7 @@ class QuotationDialog(QDialog):
             QMessageBox.warning(self, '提示', '请先设置成本信息')
             return
 
-        suggested_price = int(total_cost * (1 + profit_rate / 100))
+        suggested_price = calc_suggested_price(total_cost, profit_rate)
         self.suggested_price_label.setText(f'建议报价: ¥{suggested_price / 100:.2f}')
 
     def _use_suggested_price(self):
@@ -268,7 +239,7 @@ class QuotationDialog(QDialog):
             QMessageBox.warning(self, '提示', '请先设置成本信息')
             return
 
-        suggested_price = int(total_cost * (1 + profit_rate / 100))
+        suggested_price = calc_suggested_price(total_cost, profit_rate)
         self.final_price_spin.setValue(suggested_price // 100)
 
     def _get_total_cost_fen(self):
@@ -287,7 +258,7 @@ class QuotationDialog(QDialog):
         final_price = self.final_price_spin.value() * 100
 
         profit = final_price - total_cost
-        profit_rate = (profit / total_cost * 100) if total_cost > 0 else 0
+        profit_rate = calc_profit_rate(final_price, total_cost)
 
         self.actual_profit_label.setText(f'实际利润: ¥{profit / 100:.2f}')
         self.actual_profit_rate_label.setText(f'实际利润率: {profit_rate:.2f}%')
@@ -295,15 +266,7 @@ class QuotationDialog(QDialog):
         self._check_warnings(total_cost, final_price, profit_rate)
 
     def _check_warnings(self, total_cost, final_price, profit_rate):
-        warnings = []
-
-        if final_price > 0 and final_price < total_cost:
-            warnings.append('⚠️ 最终报价低于成本线，将造成亏损！')
-
-        if final_price > 0 and profit_rate < self.min_profit_rate:
-            warnings.append(
-                f'⚠️ 实际利润率 ({profit_rate:.2f}%) 低于设定阈值 ({self.min_profit_rate}%)！'
-            )
+        warnings = check_quotation_warnings(total_cost, final_price, self.min_profit_rate)
 
         if warnings:
             self.warning_label.setText('\n'.join(warnings))
@@ -382,19 +345,7 @@ class QuotationDialog(QDialog):
             db.close()
 
     def _generate_quotation_no(self):
-        db = get_session()
-        try:
-            max_no = db.query(Quotation).order_by(Quotation.id.desc()).first()
-            if max_no:
-                try:
-                    num = int(max_no.quotation_no.split('-')[-1]) + 1
-                except:
-                    num = 1
-            else:
-                num = 1
-            return f'Q-{date.today().year}-{num:03d}'
-        finally:
-            db.close()
+        return generate_quotation_no()
 
     def _on_ok(self):
         quotation_no = self.quotation_no_edit.text().strip()
@@ -412,9 +363,7 @@ class QuotationDialog(QDialog):
 
         total_cost = self._get_total_cost_fen()
         final_price = self.final_price_spin.value() * 100
-        profit_rate = 0
-        if total_cost > 0:
-            profit_rate = ((final_price - total_cost) / total_cost) * 100
+        profit_rate = calc_profit_rate(final_price, total_cost)
 
         if final_price > 0 and final_price < total_cost:
             reply = QMessageBox.question(
@@ -439,8 +388,7 @@ class QuotationDialog(QDialog):
             if self.quotation:
                 quotation = db.query(Quotation).filter(Quotation.id == self.quotation.id).first()
             else:
-                existing = db.query(Quotation).filter(Quotation.quotation_no == quotation_no).first()
-                if existing:
+                if check_quotation_no_exists(quotation_no):
                     QMessageBox.warning(self, '提示', '该报价单编号已存在')
                     return
                 quotation = Quotation()
@@ -453,7 +401,7 @@ class QuotationDialog(QDialog):
             quotation.other_cost = self.other_cost_spin.value() * 100
             quotation.total_cost = total_cost
             quotation.target_profit_rate = self.target_profit_rate_spin.value()
-            quotation.suggested_price = int(total_cost * (1 + quotation.target_profit_rate / 100))
+            quotation.suggested_price = calc_suggested_price(total_cost, quotation.target_profit_rate)
             quotation.final_price = final_price
 
             qdate = self.quotation_date_edit.date()

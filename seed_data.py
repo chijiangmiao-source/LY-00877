@@ -1,6 +1,6 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from database import init_db, get_session
-from models import Sample, Adjustment, Milestone, CostRecord, CostWarning
+from models import Sample, Adjustment, Milestone, CostRecord, CostWarning, Customer, Quotation, CommunicationRecord
 
 
 def seed_demo_data():
@@ -337,6 +337,324 @@ def seed_demo_data():
             cw = CostWarning(sample_id=sample_id, **warning_data)
             db.add(cw)
 
+        customers_data = [
+            {
+                'customer_no': 'CUS-001',
+                'name': '王女士',
+                'phone': '13800138001',
+                'email': 'wang@example.com',
+                'address': '北京市朝阳区xxx街道123号',
+                'contact_person': '王女士',
+                'customer_level': '金牌',
+                'remark': '老客户，对品质要求高，偏好复古风格'
+            },
+            {
+                'customer_no': 'CUS-002',
+                'name': '李先生',
+                'phone': '13800138002',
+                'email': 'li@example.com',
+                'address': '上海市浦东新区xxx路456号',
+                'contact_person': '李先生',
+                'customer_level': '银牌',
+                'remark': '喜欢简约风格，价格敏感'
+            },
+            {
+                'customer_no': 'CUS-003',
+                'name': '张小姐',
+                'phone': '13800138003',
+                'email': 'zhang@example.com',
+                'address': '广州市天河区xxx街789号',
+                'contact_person': '张小姐',
+                'customer_level': '钻石',
+                'remark': 'VIP客户，已多次下单，推荐了很多朋友'
+            },
+            {
+                'customer_no': 'CUS-004',
+                'name': '刘先生',
+                'phone': '13800138004',
+                'email': 'liu@example.com',
+                'address': '深圳市南山区xxx大道321号',
+                'contact_person': '刘先生',
+                'customer_level': '普通',
+                'remark': '新客户，首次咨询'
+            },
+            {
+                'customer_no': 'CUS-005',
+                'name': '陈女士',
+                'phone': '13800138005',
+                'email': 'chen@example.com',
+                'address': '杭州市西湖区xxx路654号',
+                'contact_person': '陈女士',
+                'customer_level': '银牌',
+                'remark': '喜欢时尚潮流，对版型要求高'
+            },
+        ]
+
+        customer_ids = []
+        for data in customers_data:
+            customer = Customer(**data)
+            db.add(customer)
+            db.flush()
+            customer_ids.append(customer.id)
+
+        samples_customer_map = {
+            0: 0,
+            1: 2,
+            2: 1,
+            3: 4,
+            4: 0,
+            5: 3,
+        }
+        for sample_idx, customer_idx in samples_customer_map.items():
+            sample = db.query(Sample).filter(Sample.id == sample_ids[sample_idx]).first()
+            if sample:
+                sample.customer_id = customer_ids[customer_idx]
+                if sample_idx == 4:
+                    sample.is_repair = True
+
+        quotations_data = [
+            {
+                'sample_idx': 0,
+                'customer_idx': 0,
+                'quotation_no': 'Q-2024-001',
+                'material_cost': 5200,
+                'labor_cost': 20000,
+                'other_cost': 1000,
+                'total_cost': 26200,
+                'target_profit_rate': 35.0,
+                'suggested_price': 40308,
+                'final_price': 39800,
+                'quotation_date': date.today() - timedelta(days=28),
+                'expected_delivery_date': date.today() - timedelta(days=8),
+                'valid_days': 30,
+                'status': '已成交',
+                'remark': '客户对报价满意，直接成交'
+            },
+            {
+                'sample_idx': 1,
+                'customer_idx': 2,
+                'quotation_no': 'Q-2024-002',
+                'material_cost': 850,
+                'labor_cost': 10350,
+                'other_cost': 500,
+                'total_cost': 11700,
+                'target_profit_rate': 30.0,
+                'suggested_price': 15210,
+                'final_price': 14800,
+                'quotation_date': date.today() - timedelta(days=18),
+                'expected_delivery_date': date.today() + timedelta(days=5),
+                'valid_days': 30,
+                'status': '已确认',
+                'remark': '客户议价后降低400元成交'
+            },
+            {
+                'sample_idx': 2,
+                'customer_idx': 1,
+                'quotation_no': 'Q-2024-003',
+                'material_cost': 4600,
+                'labor_cost': 23100,
+                'other_cost': 1500,
+                'total_cost': 29200,
+                'target_profit_rate': 30.0,
+                'suggested_price': 37960,
+                'final_price': 35000,
+                'quotation_date': date.today() - timedelta(days=8),
+                'expected_delivery_date': date.today() + timedelta(days=7),
+                'valid_days': 30,
+                'status': '待确认',
+                'remark': '报价低于成本线预警，需要关注'
+            },
+            {
+                'sample_idx': 4,
+                'customer_idx': 0,
+                'quotation_no': 'Q-2024-004',
+                'material_cost': 0,
+                'labor_cost': 0,
+                'other_cost': 0,
+                'total_cost': 0,
+                'target_profit_rate': 25.0,
+                'suggested_price': 6000,
+                'final_price': 0,
+                'quotation_date': date.today() - timedelta(days=12),
+                'expected_delivery_date': date.today() - timedelta(days=3),
+                'valid_days': 15,
+                'status': '已拒绝',
+                'reject_reason': '客户认为报价过高，选择其他店家',
+                'remark': '返修订单，客户对价格不满意'
+            },
+            {
+                'sample_idx': 5,
+                'customer_idx': 3,
+                'quotation_no': 'Q-2024-005',
+                'material_cost': 1700,
+                'labor_cost': 19250,
+                'other_cost': 800,
+                'total_cost': 21750,
+                'target_profit_rate': 30.0,
+                'suggested_price': 28275,
+                'final_price': 28800,
+                'quotation_date': date.today() - timedelta(days=6),
+                'expected_delivery_date': date.today() + timedelta(days=10),
+                'valid_days': 30,
+                'status': '已成交',
+                'remark': '新客户首次合作，报价利润率偏低'
+            },
+        ]
+
+        quotation_ids = []
+        for q_data in quotations_data:
+            sample_idx = q_data.pop('sample_idx')
+            customer_idx = q_data.pop('customer_idx')
+            q_data['sample_id'] = sample_ids[sample_idx]
+            q_data['customer_id'] = customer_ids[customer_idx]
+            quotation = Quotation(**q_data)
+            db.add(quotation)
+            db.flush()
+            quotation_ids.append(quotation.id)
+
+        communications_data = [
+            {
+                'sample_idx': 0,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=30),
+                'communicate_type': '电话',
+                'content': '客户来电咨询旧牛仔裤改造背包的可行性和价格区间',
+                'follow_up': '发送款式参考图给客户',
+                'follow_up_date': date.today() - timedelta(days=29),
+                'operator': '李设计师',
+                'is_important': True,
+            },
+            {
+                'sample_idx': 0,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=28),
+                'communicate_type': '微信',
+                'content': '客户确认款式，发送报价单，客户对价格表示接受',
+                'follow_up': '安排打样',
+                'follow_up_date': date.today() - timedelta(days=27),
+                'operator': '李设计师',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 0,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=20),
+                'communicate_type': '面谈',
+                'content': '客户到店查看半成品，提出内衬颜色调整意见',
+                'follow_up': '更换内衬布料为深蓝色',
+                'follow_up_date': date.today() - timedelta(days=19),
+                'operator': '张师傅',
+                'is_important': True,
+            },
+            {
+                'sample_idx': 0,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=10),
+                'communicate_type': '电话',
+                'content': '通知客户样品已完成，邀请到店试背',
+                'follow_up': '客户表示满意，已成交',
+                'follow_up_date': None,
+                'operator': '李设计师',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 1,
+                'customer_idx': 2,
+                'communicate_date': datetime.now() - timedelta(days=20),
+                'communicate_type': '微信',
+                'content': 'VIP客户张小姐咨询旧T恤改造购物袋',
+                'follow_up': '快速报价，给予VIP折扣',
+                'follow_up_date': date.today() - timedelta(days=19),
+                'operator': '王师傅',
+                'is_important': True,
+            },
+            {
+                'sample_idx': 1,
+                'customer_idx': 2,
+                'communicate_date': datetime.now() - timedelta(days=15),
+                'communicate_type': '电话',
+                'content': '客户提出提手需要更结实，讨论加固方案',
+                'follow_up': '添加衬布加固提手',
+                'follow_up_date': date.today() - timedelta(days=14),
+                'operator': '王师傅',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 2,
+                'customer_idx': 1,
+                'communicate_date': datetime.now() - timedelta(days=10),
+                'communicate_type': '邮件',
+                'content': '发送报价单给李先生，说明报价明细',
+                'follow_up': '等待客户确认',
+                'follow_up_date': date.today() - timedelta(days=5),
+                'operator': '李设计师',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 2,
+                'customer_idx': 1,
+                'communicate_date': datetime.now() - timedelta(days=5),
+                'communicate_type': '电话',
+                'content': '客户来电议价，希望降低价格',
+                'follow_up': '重新核算成本，考虑给予优惠',
+                'follow_up_date': date.today(),
+                'operator': '李设计师',
+                'is_important': True,
+            },
+            {
+                'sample_idx': 4,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=15),
+                'communicate_type': '微信',
+                'content': '老客户王女士返修之前的围裙，要求加宽腰围',
+                'follow_up': '安排返修，给予老客户优惠',
+                'follow_up_date': date.today() - timedelta(days=14),
+                'operator': '张师傅',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 4,
+                'customer_idx': 0,
+                'communicate_date': datetime.now() - timedelta(days=10),
+                'communicate_type': '电话',
+                'content': '告知客户返修报价，客户认为价格过高',
+                'follow_up': '客户表示需要考虑',
+                'follow_up_date': None,
+                'operator': '张师傅',
+                'is_important': True,
+            },
+            {
+                'sample_idx': 5,
+                'customer_idx': 3,
+                'communicate_date': datetime.now() - timedelta(days=8),
+                'communicate_type': '电话',
+                'content': '新客户刘先生咨询牛仔裤改牛仔裙',
+                'follow_up': '介绍工艺流程和报价',
+                'follow_up_date': date.today() - timedelta(days=7),
+                'operator': '王师傅',
+                'is_important': False,
+            },
+            {
+                'sample_idx': 5,
+                'customer_idx': 3,
+                'communicate_date': datetime.now() - timedelta(days=6),
+                'communicate_type': '微信',
+                'content': '发送报价单，客户确认接受',
+                'follow_up': '安排打样',
+                'follow_up_date': date.today() - timedelta(days=5),
+                'operator': '王师傅',
+                'is_important': True,
+            },
+        ]
+
+        for comm_data in communications_data:
+            sample_idx = comm_data.pop('sample_idx')
+            customer_idx = comm_data.pop('customer_idx')
+            comm_data['sample_id'] = sample_ids[sample_idx]
+            comm_data['customer_id'] = customer_ids[customer_idx]
+            communication = CommunicationRecord(**comm_data)
+            db.add(communication)
+
         db.commit()
         print('演示数据导入成功！')
         print(f'共导入 {len(samples_data)} 条试样记录')
@@ -347,6 +665,9 @@ def seed_demo_data():
         total_cost_records = sum(len(cr) for _, cr in cost_records_data)
         print(f'共导入 {total_cost_records} 条成本记录')
         print(f'共导入 {len(cost_warnings_data)} 条成本预警记录')
+        print(f'共导入 {len(customers_data)} 条客户记录')
+        print(f'共导入 {len(quotations_data)} 条报价记录')
+        print(f'共导入 {len(communications_data)} 条沟通记录')
 
     except Exception as e:
         db.rollback()

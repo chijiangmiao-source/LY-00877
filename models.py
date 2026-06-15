@@ -5,6 +5,29 @@ from datetime import datetime
 Base = declarative_base()
 
 
+class Customer(Base):
+    __tablename__ = 'customers'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_no = Column(String(50), unique=True, nullable=False, comment='客户编号')
+    name = Column(String(100), nullable=False, comment='客户名称')
+    phone = Column(String(20), comment='联系电话')
+    email = Column(String(100), comment='邮箱')
+    address = Column(String(200), comment='地址')
+    contact_person = Column(String(50), comment='联系人')
+    customer_level = Column(String(20), default='普通', comment='客户等级：普通/银牌/金牌/钻石')
+    remark = Column(Text, comment='备注')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    samples = relationship('Sample', back_populates='customer')
+    quotations = relationship('Quotation', back_populates='customer')
+    communications = relationship('CommunicationRecord', back_populates='customer')
+
+    def __repr__(self):
+        return f'<Customer {self.name}>'
+
+
 class Sample(Base):
     __tablename__ = 'samples'
 
@@ -19,12 +42,17 @@ class Sample(Base):
     expected_completion_date = Column(Date, comment='预计完成日期')
     reminder_status = Column(String(20), default='正常', comment='提醒状态：正常/即将超期/已超期')
     expected_price = Column(Integer, default=0, comment='预计售价（分），用于利润预估')
+    customer_id = Column(Integer, ForeignKey('customers.id'), comment='关联客户ID')
+    is_repair = Column(Boolean, default=False, comment='是否返修')
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     adjustments = relationship('Adjustment', back_populates='sample', cascade='all, delete-orphan')
     milestones = relationship('Milestone', back_populates='sample', cascade='all, delete-orphan')
     cost_records = relationship('CostRecord', back_populates='sample', cascade='all, delete-orphan')
+    customer = relationship('Customer', back_populates='samples')
+    quotations = relationship('Quotation', back_populates='sample', cascade='all, delete-orphan')
+    communications = relationship('CommunicationRecord', back_populates='sample', cascade='all, delete-orphan')
 
     def __repr__(self):
         return f'<Sample {self.sample_no}>'
@@ -110,3 +138,70 @@ class CostWarning(Base):
 
     def __repr__(self):
         return f'<CostWarning {self.warning_message}>'
+
+
+class Quotation(Base):
+    __tablename__ = 'quotations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    quotation_no = Column(String(50), unique=True, nullable=False, comment='报价单编号')
+    sample_id = Column(Integer, ForeignKey('samples.id'), nullable=False, comment='关联试样ID')
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False, comment='关联客户ID')
+    material_cost = Column(Integer, default=0, comment='材料成本（分）')
+    labor_cost = Column(Integer, default=0, comment='人工成本（分）')
+    other_cost = Column(Integer, default=0, comment='其他成本（分）')
+    total_cost = Column(Integer, default=0, comment='总成本（分）')
+    target_profit_rate = Column(Float, default=30.0, comment='目标利润率（%）')
+    suggested_price = Column(Integer, default=0, comment='建议报价（分）')
+    final_price = Column(Integer, default=0, comment='最终报价（分）')
+    quotation_date = Column(Date, comment='报价日期')
+    expected_delivery_date = Column(Date, comment='预计交付日期')
+    valid_days = Column(Integer, default=30, comment='报价有效期（天）')
+    status = Column(String(20), default='待确认', comment='报价状态：待确认/已确认/已拒绝/已成交')
+    reject_reason = Column(String(200), comment='拒绝原因')
+    remark = Column(Text, comment='备注')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    sample = relationship('Sample', back_populates='quotations')
+    customer = relationship('Customer', back_populates='quotations')
+
+    def __repr__(self):
+        return f'<Quotation {self.quotation_no}>'
+
+
+class CommunicationRecord(Base):
+    __tablename__ = 'communication_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sample_id = Column(Integer, ForeignKey('samples.id'), comment='关联试样ID')
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False, comment='关联客户ID')
+    communicate_date = Column(DateTime, default=datetime.now, comment='沟通时间')
+    communicate_type = Column(String(20), default='电话', comment='沟通方式：电话/微信/邮件/面谈')
+    content = Column(Text, nullable=False, comment='沟通内容')
+    follow_up = Column(Text, comment='跟进事项')
+    follow_up_date = Column(Date, comment='跟进日期')
+    operator = Column(String(50), comment='操作人')
+    is_important = Column(Boolean, default=False, comment='是否重要')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    sample = relationship('Sample', back_populates='communications')
+    customer = relationship('Customer', back_populates='communications')
+
+    def __repr__(self):
+        return f'<CommunicationRecord {self.id}>'
+
+
+class SystemConfig(Base):
+    __tablename__ = 'system_configs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_key = Column(String(50), unique=True, nullable=False, comment='配置键')
+    config_value = Column(String(200), comment='配置值')
+    description = Column(String(200), comment='说明')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f'<SystemConfig {self.config_key}>'

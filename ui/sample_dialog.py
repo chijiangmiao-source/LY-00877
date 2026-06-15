@@ -1,12 +1,14 @@
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                              QDateEdit, QTextEdit, QDialogButtonBox, QMessageBox,
-                             QCheckBox, QHBoxLayout, QWidget)
+                             QCheckBox, QHBoxLayout, QWidget, QPushButton,
+                             QLabel, QVBoxLayout, QTableWidget, QTableWidgetItem)
 from PyQt6.QtCore import QDate, Qt, QRegularExpression
 from PyQt6.QtGui import QRegularExpressionValidator
 from datetime import date
-from models import Sample
+from models import Sample, Customer
 from validators import validate_sample, ValidationError
 from database import get_session
+from ui.customer_dialog import CustomerSelectDialog
 
 _CHINESE_REGEX = QRegularExpression(r'^[\u4e00-\u9fff\u3400-\u4dbfa-zA-Z\u00C0-\u024F\-/·]*$')
 
@@ -15,8 +17,9 @@ class SampleDialog(QDialog):
     def __init__(self, parent=None, sample_id=None):
         super().__init__(parent)
         self.sample_id = sample_id
+        self.customer_id = None
         self.setWindowTitle('新增试样' if sample_id is None else '编辑试样')
-        self.resize(500, 500)
+        self.resize(550, 600)
         self._init_ui()
         if sample_id:
             self._load_sample()
@@ -47,6 +50,25 @@ class SampleDialog(QDialog):
         self.person_in_charge_edit.setPlaceholderText('请输入负责人')
         self.person_in_charge_edit.setValidator(QRegularExpressionValidator(_CHINESE_REGEX, self))
         layout.addRow('负责人:', self.person_in_charge_edit)
+
+        customer_widget = QWidget()
+        customer_layout = QHBoxLayout()
+        customer_layout.setContentsMargins(0, 0, 0, 0)
+        self.customer_label = QLabel('未选择客户')
+        self.customer_label.setStyleSheet('color: #666;')
+        customer_layout.addWidget(self.customer_label)
+        self.select_customer_btn = QPushButton('选择客户')
+        self.select_customer_btn.clicked.connect(self._on_select_customer)
+        customer_layout.addWidget(self.select_customer_btn)
+        self.clear_customer_btn = QPushButton('清除')
+        self.clear_customer_btn.clicked.connect(self._on_clear_customer)
+        customer_layout.addWidget(self.clear_customer_btn)
+        customer_layout.addStretch()
+        customer_widget.setLayout(customer_layout)
+        layout.addRow('关联客户:', customer_widget)
+
+        self.is_repair_check = QCheckBox('标记为返修订单')
+        layout.addRow('', self.is_repair_check)
 
         expected_widget = QWidget()
         expected_layout = QHBoxLayout()
@@ -90,6 +112,25 @@ class SampleDialog(QDialog):
     def _on_expected_check_changed(self, state):
         self.expected_date_edit.setEnabled(state == Qt.CheckState.Checked.value)
 
+    def _on_select_customer(self):
+        dialog = CustomerSelectDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.customer_id = dialog.selected_customer_id
+            if self.customer_id:
+                db = get_session()
+                try:
+                    customer = db.query(Customer).filter(Customer.id == self.customer_id).first()
+                    if customer:
+                        self.customer_label.setText(f'{customer.customer_no} - {customer.name}')
+                        self.customer_label.setStyleSheet('color: #333;')
+                finally:
+                    db.close()
+
+    def _on_clear_customer(self):
+        self.customer_id = None
+        self.customer_label.setText('未选择客户')
+        self.customer_label.setStyleSheet('color: #666;')
+
     def _load_sample(self):
         db = get_session()
         try:
@@ -102,6 +143,13 @@ class SampleDialog(QDialog):
                                                     sample.sample_date.month,
                                                     sample.sample_date.day))
                 self.person_in_charge_edit.setText(sample.person_in_charge or '')
+                self.customer_id = sample.customer_id
+                if sample.customer_id:
+                    customer = db.query(Customer).filter(Customer.id == sample.customer_id).first()
+                    if customer:
+                        self.customer_label.setText(f'{customer.customer_no} - {customer.name}')
+                        self.customer_label.setStyleSheet('color: #333;')
+                self.is_repair_check.setChecked(sample.is_repair or False)
                 if sample.expected_completion_date:
                     self.expected_checkbox.setChecked(True)
                     self.expected_date_edit.setDate(QDate(
@@ -129,6 +177,8 @@ class SampleDialog(QDialog):
             qdate = self.sample_date_edit.date()
             sample.sample_date = date(qdate.year(), qdate.month(), qdate.day())
             sample.person_in_charge = self.person_in_charge_edit.text().strip() or None
+            sample.customer_id = self.customer_id
+            sample.is_repair = self.is_repair_check.isChecked()
             if self.expected_checkbox.isChecked():
                 exp_qdate = self.expected_date_edit.date()
                 sample.expected_completion_date = date(exp_qdate.year(), exp_qdate.month(), exp_qdate.day())
@@ -153,3 +203,83 @@ class SampleDialog(QDialog):
             db.rollback()
         finally:
             db.close()
+
+
+class SampleSelectDialog(QDialog):
+    def __init__(self, parent=None, customer_id=None):
+        super().__init__(parent)
+        self.selected_sample_id = None
+        self.customer_id = customer_id
+        self.setWindowTitle('选择试样')
+        self.resize(600, 400)
+        self._init_ui()
+        self._load_samples()
+
+    def _init_ui(self):
+        layout = QVBoxLayout()
+
+        search_layout = QHBoxLayout()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText('搜索试样编号或原衣类型...')
+        self.search_edit.textChanged.connect(self._on_search)
+        search_layout.addWidget(self.search_edit)
+        layout.addLayout(search_layout)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(['ID', '试样编号', '原衣类型', '改造方向', '打样日期'])
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.doubleClicked.connect(self._on_double_click)
+        layout.addWidget(self.table)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def _load_samples(self, keyword=None):
+        db = get_session()
+        try:
+            query = db.query(Sample)
+            if self.customer_id:
+                query = query.filter(Sample.customer_id == self.customer_id)
+            if keyword:
+                keyword = f'%{keyword}%'
+                query = query.filter(
+                    (Sample.sample_no.like(keyword)) |
+                    (Sample.original_type.like(keyword))
+                )
+            samples = query.order_by(Sample.sample_date.desc()).all()
+
+            self.table.setRowCount(len(samples))
+            for row, sample in enumerate(samples):
+                self.table.setItem(row, 0, QTableWidgetItem(str(sample.id)))
+                self.table.setItem(row, 1, QTableWidgetItem(sample.sample_no))
+                self.table.setItem(row, 2, QTableWidgetItem(sample.original_type or ''))
+                self.table.setItem(row, 3, QTableWidgetItem(sample.transformation_direction or ''))
+                self.table.setItem(row, 4, QTableWidgetItem(sample.sample_date.strftime('%Y-%m-%d')))
+
+            self.table.setColumnHidden(0, True)
+            self.table.resizeColumnsToContents()
+        finally:
+            db.close()
+
+    def _on_search(self, keyword):
+        self._load_samples(keyword.strip() if keyword else None)
+
+    def _on_double_click(self, index):
+        self._on_accept()
+
+    def _on_accept(self):
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, '提示', '请选择一个试样')
+            return
+        self.selected_sample_id = int(self.table.item(current_row, 0).text())
+        self.accept()

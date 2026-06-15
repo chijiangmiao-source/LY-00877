@@ -1,7 +1,7 @@
 import os
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
-from models import Base, Sample, Adjustment, Milestone, CostRecord, CostWarning
+from models import Base, Sample, Adjustment, Milestone, CostRecord, CostWarning, Customer, Quotation, CommunicationRecord, SystemConfig
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workshop.db')
 DB_URL = f'sqlite:///{DB_PATH}'
@@ -27,6 +27,10 @@ def _migrate_db():
             conn.execute(text("ALTER TABLE samples ADD COLUMN reminder_status VARCHAR(20) DEFAULT '正常'"))
         if 'expected_price' not in samples_columns:
             conn.execute(text('ALTER TABLE samples ADD COLUMN expected_price INTEGER DEFAULT 0'))
+        if 'customer_id' not in samples_columns:
+            conn.execute(text('ALTER TABLE samples ADD COLUMN customer_id INTEGER'))
+        if 'is_repair' not in samples_columns:
+            conn.execute(text('ALTER TABLE samples ADD COLUMN is_repair BOOLEAN DEFAULT 0'))
 
         adjustments_columns = [col['name'] for col in inspector.get_columns('adjustments')]
         if 'failure_reason' not in adjustments_columns:
@@ -73,6 +77,87 @@ def _migrate_db():
                     FOREIGN KEY (sample_id) REFERENCES samples (id)
                 )
             '''))
+
+        if 'customers' not in inspector.get_table_names():
+            conn.execute(text('''
+                CREATE TABLE customers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_no VARCHAR(50) UNIQUE NOT NULL,
+                    name VARCHAR(100) NOT NULL,
+                    phone VARCHAR(20),
+                    email VARCHAR(100),
+                    address VARCHAR(200),
+                    contact_person VARCHAR(50),
+                    customer_level VARCHAR(20) DEFAULT '普通',
+                    remark TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            '''))
+
+        if 'quotations' not in inspector.get_table_names():
+            conn.execute(text('''
+                CREATE TABLE quotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    quotation_no VARCHAR(50) UNIQUE NOT NULL,
+                    sample_id INTEGER NOT NULL,
+                    customer_id INTEGER NOT NULL,
+                    material_cost INTEGER DEFAULT 0,
+                    labor_cost INTEGER DEFAULT 0,
+                    other_cost INTEGER DEFAULT 0,
+                    total_cost INTEGER DEFAULT 0,
+                    target_profit_rate REAL DEFAULT 30.0,
+                    suggested_price INTEGER DEFAULT 0,
+                    final_price INTEGER DEFAULT 0,
+                    quotation_date DATE,
+                    expected_delivery_date DATE,
+                    valid_days INTEGER DEFAULT 30,
+                    status VARCHAR(20) DEFAULT '待确认',
+                    reject_reason VARCHAR(200),
+                    remark TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    FOREIGN KEY (sample_id) REFERENCES samples (id),
+                    FOREIGN KEY (customer_id) REFERENCES customers (id)
+                )
+            '''))
+
+        if 'communication_records' not in inspector.get_table_names():
+            conn.execute(text('''
+                CREATE TABLE communication_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sample_id INTEGER,
+                    customer_id INTEGER NOT NULL,
+                    communicate_date DATETIME,
+                    communicate_type VARCHAR(20) DEFAULT '电话',
+                    content TEXT NOT NULL,
+                    follow_up TEXT,
+                    follow_up_date DATE,
+                    operator VARCHAR(50),
+                    is_important BOOLEAN DEFAULT 0,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    FOREIGN KEY (sample_id) REFERENCES samples (id),
+                    FOREIGN KEY (customer_id) REFERENCES customers (id)
+                )
+            '''))
+
+        if 'system_configs' not in inspector.get_table_names():
+            conn.execute(text('''
+                CREATE TABLE system_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    config_key VARCHAR(50) UNIQUE NOT NULL,
+                    config_value VARCHAR(200),
+                    description VARCHAR(200),
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            '''))
+        
+        result = conn.execute(text("SELECT COUNT(*) FROM system_configs WHERE config_key IN ('min_profit_rate', 'default_profit_rate')")).scalar()
+        if result < 2:
+            conn.execute(text("INSERT OR IGNORE INTO system_configs (config_key, config_value, description) VALUES ('min_profit_rate', '20', '最低利润率阈值（%）')"))
+            conn.execute(text("INSERT OR IGNORE INTO system_configs (config_key, config_value, description) VALUES ('default_profit_rate', '30', '默认利润率（%）')"))
 
         conn.commit()
     except Exception as e:

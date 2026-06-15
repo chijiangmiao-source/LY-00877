@@ -16,6 +16,7 @@ from ui.comparison_dialog import ComparisonDialog
 from ui.stats_dialog import StatsDialog
 from ui.review_center_dialog import ReviewCenterDialog
 from ui.cost_center_dialog import CostCenterDialog
+from ui.order_quote_center_dialog import OrderQuoteCenterDialog
 
 
 class MainWindow(QMainWindow):
@@ -66,6 +67,10 @@ class MainWindow(QMainWindow):
         self.cost_center_btn = QPushButton('成本核算中心')
         self.cost_center_btn.clicked.connect(self._show_cost_center)
         toolbar_layout.addWidget(self.cost_center_btn)
+
+        self.order_quote_btn = QPushButton('订单报价中心')
+        self.order_quote_btn.clicked.connect(self._show_order_quote_center)
+        toolbar_layout.addWidget(self.order_quote_btn)
 
         self.export_btn = QPushButton('导出Excel')
         self.export_btn.clicked.connect(self._export_excel)
@@ -301,6 +306,10 @@ class MainWindow(QMainWindow):
 
     def _show_cost_center(self):
         dialog = CostCenterDialog(self)
+        dialog.exec()
+
+    def _show_order_quote_center(self):
+        dialog = OrderQuoteCenterDialog(self)
         dialog.exec()
 
     def _export_excel(self):
